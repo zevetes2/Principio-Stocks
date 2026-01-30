@@ -1,0 +1,32 @@
+name: Actualizacion Automatica Portafolio
+
+# Define cuándo se ejecuta el código
+on:
+  schedule:
+    # Se ejecuta a las 12:00 UTC (ajusta según tu zona horaria) de lunes a viernes
+    - cron: '0 12 * * 1-5'
+  workflow_dispatch: # Esto añade un botón para ejecutarlo manualmente cuando quieras
+
+jobs:
+  ejecutar-analisis:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Copiar contenido del repositorio
+        uses: actions/checkout@v3
+
+      - name: Configurar Python 3.10
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Instalar dependencias
+        run: |
+          pip install gspread google-auth yfinance pandas numpy
+
+      - name: Crear archivo de credenciales JSON
+        # Este paso toma el "Secret" que guardaste y lo convierte en el archivo que tu código busca
+        run: echo '${{ secrets.GOOGLE_JSON_KEY }}' > principios.json
+
+      - name: Ejecutar el script de Python
+        run: python main.py
