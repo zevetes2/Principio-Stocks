@@ -14,7 +14,7 @@ spreadsheet_name = "Portafolio Financiero"
 worksheet_name = "7 PRINCIPIOS"
 
 start_row = 7
-end_row = 25
+end_row = 187
 
 # --- AUTENTICACIÓN ---
 try:
@@ -990,4 +990,5 @@ except gspread.exceptions.WorksheetNotFound:
 except Exception as e:
     print(f"❌ Ocurrió un error inesperado: {e}")
     import traceback
+
     traceback.print_exc()
