@@ -3,10 +3,10 @@ name: Actualizacion Automatica Portafolio
 # Define cuándo se ejecuta el código
 on:
   schedule:
-    # Se ejecuta a las 12:00 UTC (ajusta según tu zona horaria) de lunes a viernes
-    - cron: '0 12 * * 1-5'
-  workflow_dispatch: # Esto añade un botón para ejecutarlo manualmente cuando quieras
-
+    # Se ejecuta cada hora desde las 9:00 AM hasta las 5:00 PM (Hora RD)
+    # 13-21 en UTC equivale a 09:00-17:00 en RD
+    - cron: '0 13-21 * * 1-5'
+  workflow_dispatch:
 jobs:
   ejecutar-analisis:
     runs-on: ubuntu-latest
