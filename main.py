@@ -14,7 +14,7 @@ spreadsheet_name = "Portafolio Financiero"
 worksheet_name = "7 PRINCIPIOS"
 
 start_row = 7
-end_row = 187
+end_row = 185
 
 # --- AUTENTICACIÓN ---
 try:
@@ -93,6 +93,22 @@ ranges = {
     'Expected Return (Rev)': f'BI{start_row}:BI{end_row}',
     'Expected Return (Analyst)': f'BJ{start_row}:BJ{end_row}',
     'Expected Return (Consensus)': f'BK{start_row}:BK{end_row}',
+    # Principio 6
+    'Min 200d': f'BL{start_row}:BL{end_row}',
+    'Max 200d': f'BT{start_row}:BT{end_row}',
+    'Soportes': f'BM{start_row}:BM{end_row}',
+    'Resistencias': f'BN{start_row}:BN{end_row}',
+    'Posición S/R': f'BU{start_row}:BU{end_row}',
+    'Soporte Cercano': f'BQ{start_row}:BQ{end_row}',
+    'Resistencia Cercana': f'BP{start_row}:BP{end_row}',
+    'Dist a Soporte %': f'BR{start_row}:BR{end_row}',
+    'Dist a Resistencia %': f'BS{start_row}:BS{end_row}',
+    # Principio 7
+    'Williams %R (Current)': f'BV{start_row}:BV{end_row}',
+    'Williams %R (1w ago)': f'BW{start_row}:BW{end_row}',
+    'Williams %R (2w ago)': f'BX{start_row}:BX{end_row}',
+    'Williams %R (Daily)' : f'BY{start_row}:BY{end_row}',
+
     # Principio 8
     'Volume Ratio': f'CB{start_row}:CB{end_row}',
     'Volume Level': f'CC{start_row}:CC{end_row}',
@@ -799,6 +815,244 @@ try:
                 all_results['Expected Return (Analyst)'].append([defaults['Expected Return (Analyst)']])
                 all_results['Expected Return (Consensus)'].append([defaults['Expected Return (Consensus)']])
 
+            
+            # ============================================================
+            # PRINCIPIO 6: SOPORTES Y RESISTENCIAS MEJORADO
+            # ============================================================
+
+            try:
+                end_date = datetime.datetime.today()
+                start_date = end_date - datetime.timedelta(days=200)
+                hist = ticker.history(start=start_date, end=end_date, interval="1d")
+                
+                if not hist.empty and len(hist) >= 50:
+                    current_price = hist['Close'].iloc[-1]
+                    
+                    # Datos básicos
+                    min_200d = hist['Low'].min()
+                    max_200d = hist['High'].max()
+                    
+                    all_results['Min 200d'].append([min_200d])
+                    all_results['Max 200d'].append([max_200d])
+                    
+                    # SOPORTES PONDERADOS POR VOLUMEN
+                    lows = hist['Low'].values
+                    volumes = hist['Volume'].values
+                    
+                    # Redondear a clusters
+                    cluster_size = current_price * 0.005  # 0.5% del precio
+                    rounded_lows = np.round(lows / cluster_size) * cluster_size
+                    
+                    # Crear diccionario: {precio: (count, total_volume)}
+                    support_data = {}
+                    for low, vol in zip(rounded_lows, volumes):
+                        if low not in support_data:
+                            support_data[low] = {'count': 0, 'volume': 0}
+                        support_data[low]['count'] += 1
+                        support_data[low]['volume'] += vol
+                    
+                    # Score ponderado: 70% frecuencia + 30% volumen
+                    support_scores = {}
+                    max_count = max([d['count'] for d in support_data.values()])
+                    max_volume = max([d['volume'] for d in support_data.values()])
+                    
+                    for price, data in support_data.items():
+                        freq_score = data['count'] / max_count
+                        vol_score = data['volume'] / max_volume
+                        support_scores[price] = (freq_score * 0.7) + (vol_score * 0.3)
+                    
+                    # Top 3 soportes
+                    top_supports = sorted(support_scores.items(), key=lambda x: x[1], reverse=True)[:3]
+                    support_levels = sorted([price for price, score in top_supports])
+                    
+                    all_results['Soportes'].append([", ".join([f"{s:.2f}" for s in support_levels])])
+                    
+                    # RESISTENCIAS PONDERADAS
+                    highs = hist['High'].values
+                    rounded_highs = np.round(highs / cluster_size) * cluster_size
+                    
+                    resistance_data = {}
+                    for high, vol in zip(rounded_highs, volumes):
+                        if high not in resistance_data:
+                            resistance_data[high] = {'count': 0, 'volume': 0}
+                        resistance_data[high]['count'] += 1
+                        resistance_data[high]['volume'] += vol
+                    
+                    resistance_scores = {}
+                    max_count = max([d['count'] for d in resistance_data.values()])
+                    max_volume = max([d['volume'] for d in resistance_data.values()])
+                    
+                    for price, data in resistance_data.items():
+                        freq_score = data['count'] / max_count
+                        vol_score = data['volume'] / max_volume
+                        resistance_scores[price] = (freq_score * 0.7) + (vol_score * 0.3)
+                    
+                    # Top 3 resistencias
+                    top_resistances = sorted(resistance_scores.items(), key=lambda x: x[1], reverse=True)[:3]
+                    resistance_levels = sorted([price for price, score in top_resistances])
+                    
+                    all_results['Resistencias'].append([", ".join([f"{r:.2f}" for r in resistance_levels])])
+                    
+                    # CLASIFICACIÓN MEJORADA
+                    # Considera distancia y calidad del nivel
+                    
+                    # Encontrar soporte más cercano abajo
+                    supports_below = [s for s in support_levels if s < current_price]
+                    nearest_support = max(supports_below) if supports_below else min_200d
+                    
+                    # Encontrar resistencia más cercana arriba
+                    resistances_above = [r for r in resistance_levels if r > current_price]
+                    nearest_resistance = min(resistances_above) if resistances_above else max_200d
+                    
+                    # Distancias porcentuales
+                    dist_to_support = (current_price - nearest_support) / current_price if nearest_support else 1
+                    dist_to_resistance = (nearest_resistance - current_price) / current_price if nearest_resistance else 1
+                    
+                    # Clasificación
+                    if current_price > max_200d:
+                        position = "Rompimiento al alza"
+                    elif current_price < min_200d:
+                        position = "Rompimiento bajista"
+                    elif dist_to_resistance < 0.02:  # Dentro del 2%
+                        position = "Cerca de resistencia"
+                    elif dist_to_support < 0.02:
+                        position = "Cerca del soporte"
+                    elif dist_to_support < dist_to_resistance:
+                        position = "Más cerca de soporte"
+                    elif dist_to_resistance < dist_to_support:
+                        position = "Más cerca de resistencia"
+                    else:
+                        position = "En rango"
+                    
+                    all_results['Posición S/R'].append([position])
+                    all_results['Soporte Cercano'].append([nearest_support])
+                    all_results['Resistencia Cercana'].append([nearest_resistance])
+                    all_results['Dist a Soporte %'].append([dist_to_support])
+                    all_results['Dist a Resistencia %'].append([dist_to_resistance])
+                    
+                   
+                    
+                else:
+                    all_results['Min 200d'].append([0])
+                    all_results['Max 200d'].append([0])
+                    all_results['Soportes'].append(["N/A"])
+                    all_results['Resistencias'].append(["N/A"])
+                    all_results['Posición S/R'].append(["N/A"])
+                    all_results['Soporte Cercano'].append([0])
+                    all_results['Resistencia Cercana'].append([0])
+                    all_results['Dist a Soporte %'].append([0])
+                    all_results['Dist a Resistencia %'].append([0])
+                    
+            except Exception as e:
+                print(f"  ⚠️ [ERROR {symbol}] S/R: {str(e)}")
+                all_results['Min 200d'].append([0])
+                all_results['Max 200d'].append([0])
+                all_results['Soportes'].append(["ERROR"])
+                all_results['Resistencias'].append(["ERROR"])
+                all_results['Posición S/R'].append(["ERROR"])
+                all_results['Soporte Cercano'].append([0])
+                all_results['Resistencia Cercana'].append([0])
+                all_results['Dist a Soporte %'].append([0])
+                all_results['Dist a Resistencia %'].append([0])
+            
+            
+    
+            # ============================================================
+            # PRINCIPIO 7: WILLIAMS %R - VERSIÓN MEJORADA
+            # ============================================================
+
+            try:
+                end_date = datetime.datetime.today()
+                start_date = end_date - datetime.timedelta(days=110)
+                hist = ticker.history(start=start_date, end=end_date, interval="1d")
+                
+                if not hist.empty and len(hist) >= 70:
+                    current_price = hist['Close'].iloc[-1]
+                    
+                    # ═══ WILLIAMS %R SEMANAL (14 semanas) ═══
+                    # Agrupar por semanas ISO
+                    hist['Week'] = hist.index.isocalendar().week
+                    hist['Year'] = hist.index.year
+                    hist['YearWeek'] = hist['Year'].astype(str) + '-W' + hist['Week'].astype(str).str.zfill(2)
+                    
+                    # Últimas 14 semanas
+                    unique_weeks = hist['YearWeek'].unique()
+                    if len(unique_weeks) >= 14:
+                        lookback_weeks = unique_weeks[-14:]
+                        lookback_data = hist[hist['YearWeek'].isin(lookback_weeks)]
+                        
+                        highest_high = lookback_data['High'].max()
+                        lowest_low = lookback_data['Low'].min()
+                        
+                        if highest_high != lowest_low:
+                            williams_r_current = ((highest_high - current_price) / (highest_high - lowest_low)) * -100
+                        else:
+                            williams_r_current = 0
+                        
+                        all_results['Williams %R (Current)'].append([williams_r_current])
+                        
+                        # Williams %R hace 1 semana
+                        if len(unique_weeks) >= 15:
+                            week_ago_data = hist[hist['YearWeek'] == unique_weeks[-2]]
+                            if not week_ago_data.empty:
+                                price_week_ago = week_ago_data['Close'].iloc[-1]
+                                williams_r_1w = ((highest_high - price_week_ago) / (highest_high - lowest_low)) * -100
+                                all_results['Williams %R (1w ago)'].append([williams_r_1w])
+                            else:
+                                all_results['Williams %R (1w ago)'].append([0])
+                        else:
+                            all_results['Williams %R (1w ago)'].append([0])
+                        
+                        # Williams %R hace 2 semanas
+                        if len(unique_weeks) >= 16:
+                            week_2ago_data = hist[hist['YearWeek'] == unique_weeks[-3]]
+                            if not week_2ago_data.empty:
+                                price_2weeks_ago = week_2ago_data['Close'].iloc[-1]
+                                williams_r_2w = ((highest_high - price_2weeks_ago) / (highest_high - lowest_low)) * -100
+                                all_results['Williams %R (2w ago)'].append([williams_r_2w])
+                            else:
+                                all_results['Williams %R (2w ago)'].append([0])
+                        else:
+                            all_results['Williams %R (2w ago)'].append([0])
+                        
+                        # ═══ WILLIAMS %R DIARIO (14 días) - BONUS ═══
+                        if len(hist) >= 14:
+                            last_14d = hist.tail(14)
+                            highest_high_14d = last_14d['High'].max()
+                            lowest_low_14d = last_14d['Low'].min()
+                            
+                            if highest_high_14d != lowest_low_14d:
+                                williams_r_daily = ((highest_high_14d - current_price) / (highest_high_14d - lowest_low_14d)) * -100
+                            else:
+                                williams_r_daily = 0
+                            
+                            all_results['Williams %R (Daily)'].append([williams_r_daily])
+                        else:
+                            all_results['Williams %R (Daily)'].append([0])
+                        
+                        
+                    else:
+                        all_results['Williams %R (Current)'].append([0])
+                        all_results['Williams %R (1w ago)'].append([0])
+                        all_results['Williams %R (2w ago)'].append([0])
+                        all_results['Williams %R (Daily)'].append([0])
+                        
+                else:
+                    all_results['Williams %R (Current)'].append([0])
+                    all_results['Williams %R (1w ago)'].append([0])
+                    all_results['Williams %R (2w ago)'].append([0])
+                    all_results['Williams %R (Daily)'].append([0])
+                    
+            except Exception as e:
+                print(f"  ⚠️ [ERROR {symbol}] Williams %R: {str(e)}")
+                all_results['Williams %R (Current)'].append([0])
+                all_results['Williams %R (1w ago)'].append([0])
+                all_results['Williams %R (2w ago)'].append([0])
+                all_results['Williams %R (Daily)'].append([0])        
+            
+            
+            
+            
             # ============================================================
             # PRINCIPIO 8: VOLUMEN Y MOMENTUM (5% del total)
             # ============================================================
@@ -972,15 +1226,54 @@ try:
 
         # 4. Escribir los datos en los rangos especificados
         print("\n--- Escribiendo datos en Google Sheets ---")
-        for metric, data_list in all_results.items():
-            try:
+       # ═══ MÉTODO NUEVO (1 llamada batch) ✅ ═══
+        try:
+            # Construir lista de actualizaciones para batch
+            batch_data = []
+            
+            for metric, data_list in all_results.items():
                 range_to_update = ranges[metric]
-                worksheet.update(range_to_update, data_list)
-                print(f"✅ '{metric}' actualizado en {range_to_update}")
-            except Exception as e:
-                print(f"❌ Error actualizando '{metric}': {e}")
+                batch_data.append({
+                    'range': range_to_update,
+                    'values': data_list
+                })
+            
+            # Escribir todo de una vez
+            worksheet.batch_update(batch_data, value_input_option='USER_ENTERED')
+            
+            print(f"✅ Todas las métricas actualizadas exitosamente ({len(batch_data)} rangos)")
+            
+            # Opcional: Imprimir detalle de cada métrica
+            for metric, data_list in all_results.items():
+                print(f"  ✓ '{metric}' → {ranges[metric]}")
+            
+        except Exception as e:
+            print(f"❌ Error en batch update: {e}")
+            
+            # Fallback: Intentar una por una con delay
+            print("\n⚠️ Intentando actualización individual con delays...")
+            import time
+            
+            success_count = 0
+            error_count = 0
+            
+            for metric, data_list in all_results.items():
+                try:
+                    range_to_update = ranges[metric]
+                    worksheet.update(range_name=range_to_update, values=data_list)
+                    success_count += 1
+                    print(f"✅ '{metric}' actualizado en {range_to_update}")
+                    
+                    # Delay para respetar rate limit (60 por minuto = 1 por segundo)
+                    time.sleep(1.1)
+                    
+                except Exception as e:
+                    error_count += 1
+                    print(f"❌ Error actualizando '{metric}': {e}")
+            
+            print(f"\n📊 Resultado: {success_count} exitosos, {error_count} errores")
 
-        print("\n🎉 ¡Proceso completado exitosamente!")
+        print("\n🎉 ¡Proceso completado!")
 
 except gspread.exceptions.SpreadsheetNotFound:
     print(f'❌ Error: La hoja de cálculo "{spreadsheet_name}" no fue encontrada.')
@@ -990,5 +1283,4 @@ except gspread.exceptions.WorksheetNotFound:
 except Exception as e:
     print(f"❌ Ocurrió un error inesperado: {e}")
     import traceback
-
     traceback.print_exc()
