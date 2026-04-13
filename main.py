@@ -1,5 +1,5 @@
 ################################-----------------------PORTAFOLIO E.T.H-----------------------##########################################
-# VERSIÓN MEJORADA: Sistema de fallback multi-fuente
+# VERSIÓN MEJORADA 2: Sistema de fallback multi-fuente
 # Fuentes: yfinance → Alpha Vantage → Polygon.io → FMP → finnhub
 # Instalar dependencias: pip install yfinance gspread google-auth requests pandas numpy finnhub-python
 
@@ -1147,91 +1147,148 @@ try:
                     append_default(k)
 
             # ═══════════════════════════════════════════════════════
-            # PRINCIPIO 6: SOPORTES Y RESISTENCIAS
+            # PRINCIPIO 6: SOPORTES Y RESISTENCIAS — MEJORADO
             # ═══════════════════════════════════════════════════════
-
             try:
                 hist_p6 = None
                 if ticker:
                     try:
-                        end_d   = datetime.datetime.today()
+                        end_d = datetime.datetime.today()
                         start_d = end_d - datetime.timedelta(days=200)
                         hist_p6 = ticker.history(start=start_d, end=end_d, interval="1d")
-                    except: pass
+                    except:
+                        pass
 
                 # Fallback Polygon OHLCV
                 if hist_p6 is None or hist_p6.empty or len(hist_p6) < 50:
                     try:
-                        end_str   = datetime.date.today().isoformat()
+                        end_str = datetime.date.today().isoformat()
                         start_str = (datetime.date.today() - datetime.timedelta(days=200)).isoformat()
                         data = poly_get(f"/v2/aggs/ticker/{symbol}/range/1/day/{start_str}/{end_str}",
                                         {"adjusted": "true", "sort": "asc", "limit": 300})
                         if data and "results" in data and data["results"]:
                             df = pd.DataFrame(data["results"])
-                            df.rename(columns={"o":"Open","h":"High","l":"Low","c":"Close","v":"Volume"}, inplace=True)
+                            df.rename(columns={"o":"Open","h":"High","l":"Low","c":"Close","v":"Volume"},
+                                      inplace=True)
                             hist_p6 = df
-                    except: pass
+                    except:
+                        pass
 
                 if hist_p6 is not None and not hist_p6.empty and len(hist_p6) >= 50:
-                    cp = hist_p6['Close'].iloc[-1]
+                    cp     = hist_p6['Close'].iloc[-1]
                     min_200d = hist_p6['Low'].min()
                     max_200d = hist_p6['High'].max()
-                    all_results['Min 200d'].append([min_200d])
-                    all_results['Max 200d'].append([max_200d])
+
+                    all_results['Min 200d'].append([round(min_200d, 4)])
+                    all_results['Max 200d'].append([round(max_200d, 4)])
+
+                    # ── MEJORA: cluster_size dinámico basado en ATR ──────────────
+                    # En lugar de cp * 0.005 fijo, usar ATR de 14 días
+                    if len(hist_p6) >= 14:
+                        hist_p6['HL'] = hist_p6['High'] - hist_p6['Low']
+                        atr_p6 = hist_p6['HL'].tail(14).mean()
+                        cluster_size = max(atr_p6 * 0.5, cp * 0.003)  # mínimo 0.3% del precio
+                    else:
+                        cluster_size = cp * 0.005  # fallback original
 
                     lows    = hist_p6['Low'].values
+                    highs   = hist_p6['High'].values
+                    closes  = hist_p6['Close'].values
                     volumes = hist_p6['Volume'].values
-                    cluster_size = cp * 0.005
 
-                    def calc_levels(prices):
+                    def calc_levels(prices, vols, n=4):  # ahora devuelve top 4 niveles
                         rounded = np.round(prices / cluster_size) * cluster_size
-                        data_d  = {}
-                        for p, v in zip(rounded, volumes):
-                            if p not in data_d: data_d[p] = {'count':0,'volume':0}
-                            data_d[p]['count']  += 1
-                            data_d[p]['volume'] += v
-                        mx_c = max(d['count'] for d in data_d.values())
+                        data_d = {}
+                        for price_r, vol in zip(rounded, vols):
+                            if price_r not in data_d:
+                                data_d[price_r] = {'count': 0, 'volume': 0}
+                            data_d[price_r]['count']  += 1
+                            data_d[price_r]['volume'] += vol
+                        if not data_d:
+                            return []
+                        mx_c = max(d['count']  for d in data_d.values())
                         mx_v = max(d['volume'] for d in data_d.values())
-                        scores = {p: (d['count']/mx_c * 0.7 + d['volume']/mx_v * 0.3) for p,d in data_d.items()}
-                        top3 = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:3]
-                        return sorted([p for p,_ in top3])
+                        scores = {
+                            p: (d['count'] / mx_c * 0.6 + d['volume'] / mx_v * 0.4)
+                            for p, d in data_d.items()
+                        }
+                        top_n = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:n]
+                        return sorted([round(p, 2) for p, _ in top_n])
 
-                    support_levels    = calc_levels(lows)
-                    resistance_levels = calc_levels(hist_p6['High'].values)
+                    support_levels    = calc_levels(lows,  volumes)
+                    resistance_levels = calc_levels(highs, volumes)
+
+                    # ── MEJORA: Point of Control (POC) ──────────────────────────
+                    # Nivel de precio con mayor volumen acumulado
+                    poc_price = None
+                    poc_side  = "N/A"
+                    try:
+                        # Volume profile: dividir el rango en 20 bins
+                        price_min = min_200d
+                        price_max = max_200d
+                        n_bins = 20
+                        bin_size = (price_max - price_min) / n_bins
+                        if bin_size > 0:
+                            vol_profile = {}
+                            for c, v in zip(closes, volumes):
+                                b = round((c - price_min) / bin_size)
+                                b = max(0, min(n_bins - 1, b))
+                                price_level = round(price_min + b * bin_size, 2)
+                                vol_profile[price_level] = vol_profile.get(price_level, 0) + v
+                            poc_price = max(vol_profile, key=vol_profile.get)
+                            poc_side  = "SOPORTE" if cp > poc_price else "RESISTENCIA"
+                    except:
+                        pass
+
+                    # ── Distancias: CORRECCIÓN de nombres BR7 / BS7 ─────────────
+                    # BS7 = Distancia al Soporte más cercano (por debajo del precio)
+                    # BR7 = Distancia a la Resistencia más cercana (por encima del precio)
+                    s_below = [s for s in support_levels    if s < cp]
+                    r_above = [r for r in resistance_levels if r > cp]
+
+                    nearest_support    = max(s_below) if s_below else min_200d
+                    nearest_resistance = min(r_above) if r_above else max_200d
+
+                    dist_to_support    = (cp - nearest_support)    / cp if nearest_support    else 1
+                    dist_to_resistance = (nearest_resistance - cp) / cp if nearest_resistance else 1
+
+                    # Clasificación BU7
+                    if   cp > max_200d:                pos = "Rompimiento al alza"
+                    elif cp < min_200d:                pos = "Rompimiento bajista"
+                    elif dist_to_resistance < 0.02:    pos = "Cerca de resistencia"
+                    elif dist_to_support    < 0.02:    pos = "Cerca del soporte"
+                    elif dist_to_support    < dist_to_resistance: pos = "Más cerca de soporte"
+                    elif dist_to_resistance < dist_to_support:    pos = "Más cerca de resistencia"
+                    else:                              pos = "En rango"
 
                     all_results['Soportes'].append([", ".join([f"{s:.2f}" for s in support_levels])])
                     all_results['Resistencias'].append([", ".join([f"{r:.2f}" for r in resistance_levels])])
-
-                    s_below = [s for s in support_levels if s < cp]
-                    r_above = [r for r in resistance_levels if r > cp]
-                    ns = max(s_below) if s_below else min_200d
-                    nr = min(r_above) if r_above else max_200d
-
-                    ds = (cp - ns) / cp if ns else 1
-                    dr = (nr - cp) / cp if nr else 1
-
-                    if cp > max_200d:                pos = "Rompimiento al alza"
-                    elif cp < min_200d:              pos = "Rompimiento bajista"
-                    elif dr < 0.02:                  pos = "Cerca de resistencia"
-                    elif ds < 0.02:                  pos = "Cerca del soporte"
-                    elif ds < dr:                    pos = "Más cerca de soporte"
-                    elif dr < ds:                    pos = "Más cerca de resistencia"
-                    else:                            pos = "En rango"
-
                     all_results['Posición S/R'].append([pos])
-                    all_results['Soporte Cercano'].append([ns])
-                    all_results['Resistencia Cercana'].append([nr])
-                    all_results['Dist a Soporte %'].append([ds])
-                    all_results['Dist a Resistencia %'].append([dr])
+                    all_results['Soporte Cercano'].append([round(nearest_support, 4)])
+                    all_results['Resistencia Cercana'].append([round(nearest_resistance, 4)])
+
+                    # CORRECCIÓN CRÍTICA: BS7 = soporte, BR7 = resistencia
+                    all_results['Dist a Soporte %'].append([round(dist_to_support, 6)])      # → BS7
+                    all_results['Dist a Resistencia %'].append([round(dist_to_resistance, 6)]) # → BR7
+
+                    # Escritura de POC en columnas (agregar a ranges dict si usas columnas nuevas)
+                    # all_results['POC Price'].append([poc_price if poc_price else "N/A"])
+                    # all_results['POC Side'].append([poc_side])
+
                 else:
                     for k in ['Min 200d','Max 200d','Soportes','Resistencias','Posición S/R',
                               'Soporte Cercano','Resistencia Cercana','Dist a Soporte %','Dist a Resistencia %']:
-                        all_results[k].append([0 if k in ('Min 200d','Max 200d','Soporte Cercano','Resistencia Cercana','Dist a Soporte %','Dist a Resistencia %') else "N/A"])
+                        all_results[k].append([0 if k in ('Min 200d','Max 200d','Soporte Cercano',
+                                              'Resistencia Cercana','Dist a Soporte %','Dist a Resistencia %')
+                                              else "N/A"])
+
             except Exception as e:
-                print(f"  ⚠️ S/R error: {e}")
+                print(f" ⚠️ S/R error: {e}")
                 for k in ['Min 200d','Max 200d','Soportes','Resistencias','Posición S/R',
                           'Soporte Cercano','Resistencia Cercana','Dist a Soporte %','Dist a Resistencia %']:
-                    all_results[k].append([0 if k in ('Min 200d','Max 200d','Soporte Cercano','Resistencia Cercana','Dist a Soporte %','Dist a Resistencia %') else "ERROR"])
+                    all_results[k].append([0 if k in ('Min 200d','Max 200d','Soporte Cercano',
+                                          'Resistencia Cercana','Dist a Soporte %','Dist a Resistencia %')
+                                          else "ERROR"])
 
             # ═══════════════════════════════════════════════════════
             # PRINCIPIO 7: WILLIAMS %R
