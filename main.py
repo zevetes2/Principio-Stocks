@@ -1,5 +1,5 @@
 ################################-----------------------PORTAFOLIO E.T.H-----------------------##########################################
-# VERSIÓN MEJORADA 2: Sistema de fallback multi-fuente
+# VERSIÓN MEJORADA 3: Sistema de fallback multi-fuente
 # Fuentes: yfinance → Alpha Vantage → Polygon.io → FMP → finnhub
 # Instalar dependencias: pip install yfinance gspread google-auth requests pandas numpy finnhub-python
 
@@ -28,7 +28,7 @@ FINNHUB_KEY        = os.getenv("FINNHUB_KEY",         "d6c9jc9r01qsiik1b3vgd6c9j
 spreadsheet_name = "Portafolio Financiero"
 worksheet_name   = "7 PRINCIPIOS"
 start_row = 7
-end_row   = 184
+end_row   = 23
 
 # ==============================================================
 # 🔑 AUTENTICACIÓN GOOGLE
@@ -797,7 +797,6 @@ try:
 
             try:
                 surprise_data = get_earnings_history(ticker, symbol) if ticker else None
-
                 if surprise_data and len(surprise_data) > 0:
                     total_quarters = len(surprise_data)
                     total_beats    = sum(1 for s in surprise_data if s > 0)
@@ -806,42 +805,63 @@ try:
                     recent_avg     = sum(surprise_data[:num_recent]) / num_recent
                     worst_miss     = min(surprise_data)
 
+                    # Weighted Consistency (sin cambios)
                     weighted_score = 0
                     for s in surprise_data:
-                        if s > 0.10:   weighted_score += 1.5
-                        elif s > 0.05: weighted_score += 1.2
-                        elif s > 0:    weighted_score += 1.0
-                        elif s > -0.05:weighted_score += 0.3
-                        elif s > -0.10:weighted_score += 0
-                        else:          weighted_score -= 0.5
+                        if   s >  0.10: weighted_score += 1.5
+                        elif s >  0.05: weighted_score += 1.2
+                        elif s >  0:    weighted_score += 1.0
+                        elif s > -0.05: weighted_score += 0.3
+                        elif s > -0.10: weighted_score += 0.0
+                        else:           weighted_score -= 0.5
                     weighted_consistency = weighted_score / total_quarters
 
-                    # Surprise Trend
+                    # Surprise Trend (sin cambios)
                     if len(surprise_data) >= 8:
-                        r4, o4 = sum(surprise_data[:4])/4, sum(surprise_data[4:8])/4
-                        if r4 > o4 + 0.02:    surprise_trend = "MEJORANDO"
-                        elif r4 > o4:          surprise_trend = "MEJORANDO LEVE"
-                        elif r4 < o4 - 0.02:  surprise_trend = "DETERIORANDO"
-                        elif r4 < o4:          surprise_trend = "DETERIORANDO LEVE"
-                        else:                  surprise_trend = "ESTABLE"
+                        r4 = sum(surprise_data[:4]) / 4
+                        o4 = sum(surprise_data[4:8]) / 4
+                        if   r4 > o4 + 0.02: surprise_trend = "MEJORANDO"
+                        elif r4 > o4:         surprise_trend = "MEJORANDO LEVE"
+                        elif r4 < o4 - 0.02: surprise_trend = "DETERIORANDO"
+                        elif r4 < o4:         surprise_trend = "DETERIORANDO LEVE"
+                        else:                 surprise_trend = "ESTABLE"
                     elif len(surprise_data) >= 4:
-                        r2, o2 = sum(surprise_data[:2])/2, sum(surprise_data[2:4])/2
-                        if r2 > o2 + 0.03:    surprise_trend = "MEJORANDO**"
-                        elif r2 > o2:          surprise_trend = "MEJORANDO LEVE**"
-                        elif r2 < o2 - 0.03:  surprise_trend = "DETERIORANDO**"
-                        elif r2 < o2:          surprise_trend = "DETERIORANDO LEVE**"
-                        else:                  surprise_trend = "ESTABLE**"
+                        r2 = sum(surprise_data[:2]) / 2
+                        o2 = sum(surprise_data[2:4]) / 2
+                        if   r2 > o2 + 0.03: surprise_trend = "MEJORANDO**"
+                        elif r2 > o2:         surprise_trend = "MEJORANDO LEVE**"
+                        elif r2 < o2 - 0.03: surprise_trend = "DETERIORANDO**"
+                        elif r2 < o2:         surprise_trend = "DETERIORANDO LEVE**"
+                        else:                 surprise_trend = "ESTABLE**"
                     else:
                         surprise_trend = "DATOS INSUFICIENTES"
+
+                    # ── NUEVO: Detección de racha reciente de misses ────────────────
+                    # Si los últimos 2 trimestres consecutivos son misses → señal de deterioro
+                    racha_miss = False
+                    if len(surprise_data) >= 2:
+                        racha_miss = (surprise_data[0] < 0 and surprise_data[1] < 0)
+
+                    # Ajustar surprise_trend si hay racha de misses reciente
+                    if racha_miss and "MEJORANDO" in surprise_trend:
+                        surprise_trend = "ÚLTIMO DETERIORO"  # Override: misses recientes pesan más
+                    elif racha_miss and surprise_trend == "ESTABLE":
+                        surprise_trend = "DETERIORANDO LEVE"
+
+                    # ── NUEVO: Revenue Surprise 4Q — cálculo mejorado ───────────────
+                    # Si ya tienes datos de revenue surprise por trimestre, calcular avg de 4Q
+                    # (el código original ya hace esto — sin cambios necesarios)
 
                     all_results['Beat Rate'].append([f"{win_rate:.2%}"])
                     all_results['Recent 4Q Avg'].append([f"{recent_avg:.2%}"])
                     all_results['Worst Miss'].append([f"{worst_miss:.2%}"])
                     all_results['Weighted Consistency'].append([f"{weighted_consistency:.2f}"])
                     all_results['Surprise Trend'].append([surprise_trend])
+
                 else:
                     for k in ['Beat Rate','Recent 4Q Avg','Worst Miss','Weighted Consistency','Surprise Trend']:
                         append_default(k)
+
             except:
                 for k in ['Beat Rate','Recent 4Q Avg','Worst Miss','Weighted Consistency','Surprise Trend']:
                     append_default(k)
@@ -1358,107 +1378,129 @@ try:
                 for k in ['Williams %R (Current)','Williams %R (1w ago)','Williams %R (2w ago)','Williams %R (Daily)']:
                     all_results[k].append([0])
 
-            # ═══════════════════════════════════════════════════════
-            # PRINCIPIO 8: VOLUMEN Y MOMENTUM
-            # ═══════════════════════════════════════════════════════
-
+# ═══════════════════════════════════════════════════════
+# PRINCIPIO 8: VOLUMEN Y MOMENTUM — MEJORADO
+# ═══════════════════════════════════════════════════════
             try:
                 hist_p8 = None
                 if ticker:
                     try:
                         end_d   = datetime.datetime.today()
-                        start_d = end_d - datetime.timedelta(days=90)
+                        start_d = end_d - datetime.timedelta(days=120)  # ← extendido de 90 a 120 días
                         hist_p8 = ticker.history(start=start_d, end=end_d, interval="1d")
-                    except: pass
+                    except:
+                        pass
 
                 # Fallback Polygon
                 if hist_p8 is None or hist_p8.empty or len(hist_p8) < 50:
                     try:
                         end_str   = datetime.date.today().isoformat()
-                        start_str = (datetime.date.today() - datetime.timedelta(days=90)).isoformat()
-                        data = poly_get(f"/v2/aggs/ticker/{symbol}/range/1/day/{start_str}/{end_str}",
-                                        {"adjusted": "true", "sort": "asc", "limit": 120})
+                        start_str = (datetime.date.today() - datetime.timedelta(days=120)).isoformat()
+                        data = poly_get(
+                            f"/v2/aggs/ticker/{symbol}/range/1/day/{start_str}/{end_str}",
+                            {"adjusted": "true", "sort": "asc", "limit": 150}
+                        )
                         if data and "results" in data and data["results"]:
                             df = pd.DataFrame(data["results"])
-                            df.rename(columns={"h":"High","l":"Low","c":"Close","v":"Volume"}, inplace=True)
+                            df.rename(columns={"h":"High","l":"Low","c":"Close","v":"Volume"},
+                                      inplace=True)
                             hist_p8 = df
-                    except: pass
+                    except:
+                        pass
 
                 if hist_p8 is not None and not hist_p8.empty and len(hist_p8) >= 50:
                     avg_vol_20 = hist_p8['Volume'].tail(20).mean()
                     avg_vol_50 = hist_p8['Volume'].tail(50).mean()
                     cur_vol    = hist_p8['Volume'].iloc[-1]
-                    vol_ratio  = cur_vol / avg_vol_50 if avg_vol_50 > 0 else 1
 
-                    if vol_ratio > 2.0:   vol_level = "MUY ALTO"
+                    vol_ratio = cur_vol / avg_vol_50 if avg_vol_50 > 0 else 1
+
+                    if   vol_ratio > 2.0: vol_level = "MUY ALTO"
                     elif vol_ratio > 1.5: vol_level = "ALTO"
                     elif vol_ratio > 0.8: vol_level = "NORMAL"
                     elif vol_ratio > 0.5: vol_level = "BAJO"
                     else:                 vol_level = "MUY BAJO"
 
-                    all_results['Volume Ratio'].append([vol_ratio])
+                    all_results['Volume Ratio'].append([round(vol_ratio, 4)])
                     all_results['Volume Level'].append([vol_level])
 
-                    # OBV
+                    # OBV — ahora con 120 días de historial
                     obv = [0]
                     for i in range(1, len(hist_p8)):
-                        if hist_p8['Close'].iloc[i] > hist_p8['Close'].iloc[i-1]:
+                        if   hist_p8['Close'].iloc[i] > hist_p8['Close'].iloc[i-1]:
                             obv.append(obv[-1] + hist_p8['Volume'].iloc[i])
                         elif hist_p8['Close'].iloc[i] < hist_p8['Close'].iloc[i-1]:
                             obv.append(obv[-1] - hist_p8['Volume'].iloc[i])
                         else:
                             obv.append(obv[-1])
+
+                    hist_p8 = hist_p8.copy()
                     hist_p8['OBV'] = obv
-                    obv_sma20 = hist_p8['OBV'].tail(20).mean()
+
+                    # Comparar OBV actual vs promedio de 30 días (más robusto que 20d)
+                    obv_sma30 = hist_p8['OBV'].tail(30).mean()
                     obv_cur   = hist_p8['OBV'].iloc[-1]
 
-                    if obv_cur > obv_sma20 * 1.05:   obv_trend = "ACUMULACIÓN"
-                    elif obv_cur < obv_sma20 * 0.95: obv_trend = "DISTRIBUCIÓN"
+                    if   obv_cur > obv_sma30 * 1.05: obv_trend = "ACUMULACIÓN"
+                    elif obv_cur < obv_sma30 * 0.95: obv_trend = "DISTRIBUCIÓN"
                     else:                             obv_trend = "NEUTRAL"
+
                     all_results['OBV Trend'].append([obv_trend])
 
                     # Price-Volume Divergence
-                    pc20 = (hist_p8['Close'].iloc[-1] - hist_p8['Close'].iloc[-20]) / hist_p8['Close'].iloc[-20]
-                    vc20 = (avg_vol_20 - avg_vol_50) / avg_vol_50
+                    pc20 = (hist_p8['Close'].iloc[-1] - hist_p8['Close'].iloc[-20]) / \
+                          hist_p8['Close'].iloc[-20] if len(hist_p8) >= 20 else 0
+                    vc20 = (avg_vol_20 - avg_vol_50) / avg_vol_50 if avg_vol_50 > 0 else 0
 
-                    if pc20 > 0.05 and vc20 > 0.2:    div = "ALCISTA FUERTE"
-                    elif pc20 > 0.05 and vc20 < -0.2: div = "ALCISTA DÉBIL"
-                    elif pc20 < -0.05 and vc20 > 0.2: div = "BAJISTA FUERTE"
-                    elif pc20 < -0.05 and vc20 < -0.2:div = "BAJISTA DÉBIL"
-                    else:                              div = "NEUTRAL"
+                    if   pc20 >  0.05 and vc20 >  0.20: div = "ALCISTA FUERTE"
+                    elif pc20 >  0.05 and vc20 < -0.20: div = "ALCISTA DÉBIL"
+                    elif pc20 < -0.05 and vc20 >  0.20: div = "BAJISTA FUERTE"
+                    elif pc20 < -0.05 and vc20 < -0.20: div = "BAJISTA DÉBIL"
+                    else:                                div = "NEUTRAL"
+
                     all_results['Price-Volume Div'].append([div])
 
-                    # MFI
-                    tp   = (hist_p8['High'] + hist_p8['Low'] + hist_p8['Close']) / 3
-                    mf   = tp * hist_p8['Volume']
+                    # MFI — sin cambios en el cálculo, solo el peso en Sheets cambia
+                    tp_series = (hist_p8['High'] + hist_p8['Low'] + hist_p8['Close']) / 3
+                    mf_series = tp_series * hist_p8['Volume']
                     pos_flow, neg_flow = [], []
                     for i in range(1, len(hist_p8)):
-                        if tp.iloc[i] > tp.iloc[i-1]:
-                            pos_flow.append(mf.iloc[i]); neg_flow.append(0)
+                        if tp_series.iloc[i] > tp_series.iloc[i-1]:
+                            pos_flow.append(mf_series.iloc[i])
+                            neg_flow.append(0)
                         else:
-                            pos_flow.append(0); neg_flow.append(mf.iloc[i])
+                            pos_flow.append(0)
+                            neg_flow.append(mf_series.iloc[i])
 
                     if len(pos_flow) >= 14:
-                        pmf = sum(pos_flow[-14:]); nmf = sum(neg_flow[-14:])
-                        mfi_val = 100 - (100 / (1 + pmf/nmf)) if nmf > 0 else 100
-                        if mfi_val > 80:   mfi_level = "SOBRECOMPRADO"
+                        pmf = sum(pos_flow[-14:])
+                        nmf = sum(neg_flow[-14:])
+                        mfi_val = 100 - (100 / (1 + pmf / nmf)) if nmf > 0 else 100
+
+                        if   mfi_val > 80: mfi_level = "SOBRECOMPRADO"
                         elif mfi_val > 60: mfi_level = "COMPRADO"
                         elif mfi_val > 40: mfi_level = "NEUTRAL"
                         elif mfi_val > 20: mfi_level = "VENDIDO"
                         else:              mfi_level = "SOBREVENDIDO"
-                        all_results['MFI'].append([mfi_val])
+
+                        all_results['MFI'].append([round(mfi_val, 2)])
                         all_results['MFI Level'].append([mfi_level])
                     else:
-                        all_results['MFI'].append([50]); all_results['MFI Level'].append(["N/A"])
+                        all_results['MFI'].append([50])
+                        all_results['MFI Level'].append(["N/A"])
+
                 else:
                     for k in ['Volume Ratio','Volume Level','OBV Trend','Price-Volume Div']:
-                        all_results[k].append([1 if k=='Volume Ratio' else "N/A"])
-                    all_results['MFI'].append([50]); all_results['MFI Level'].append(["N/A"])
+                        all_results[k].append([1 if k == 'Volume Ratio' else "N/A"])
+                    all_results['MFI'].append([50])
+                    all_results['MFI Level'].append(["N/A"])
+
             except Exception as e:
-                print(f"  ⚠️ Volume/Momentum error: {e}")
+                print(f" ⚠️ Volume/Momentum error: {e}")
                 for k in ['Volume Ratio','Volume Level','OBV Trend','Price-Volume Div']:
-                    all_results[k].append([1 if k=='Volume Ratio' else "ERROR"])
-                all_results['MFI'].append([50]); all_results['MFI Level'].append(["ERROR"])
+                    all_results[k].append([1 if k == 'Volume Ratio' else "ERROR"])
+                all_results['MFI'].append([50])
+                all_results['MFI Level'].append(["ERROR"])
 
             # ═══════════════════════════════════════════════════════
             # DATOS ADICIONALES
