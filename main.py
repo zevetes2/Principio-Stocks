@@ -24,7 +24,6 @@ JSON_KEY_FILE = "principios.json"
 #   Settings → Secrets and variables → Actions → New repository secret
 # En local: ejecutá antes de correr el script:
 #   export ALPHA_VANTAGE_KEY="tu_clave"
-#   export POLYGON_KEY="tu_clave"
 #   export FMP_KEY="tu_clave"
 #   export FINNHUB_KEY="tu_clave"
 # ──────────────────────────────────────────────────────────────
@@ -40,7 +39,6 @@ def _require_env(name: str) -> str:
     return value
 
 ALPHA_VANTAGE_KEY = _require_env("ALPHA_VANTAGE_KEY")   # https://www.alphavantage.co/support/#api-key
-POLYGON_KEY       = _require_env("POLYGON_KEY")          # https://polygon.io/dashboard
 FMP_KEY           = _require_env("FMP_KEY")              # https://financialmodelingprep.com/developer/docs/
 FINNHUB_KEY       = _require_env("FINNHUB_KEY")          # https://finnhub.io/register
 
@@ -88,19 +86,6 @@ def av_get(function, symbol, extra_params=None):
         print(f"    ⚠️  Alpha Vantage error: {e}")
         return None
 
-# --- Polygon.io (REST) ---
-POLY_BASE = "https://api.polygon.io"
-
-def poly_get(endpoint, params=None):
-    """Consulta Polygon.io con manejo de errores."""
-    try:
-        p = params or {}
-        p["apiKey"] = POLYGON_KEY
-        r = requests.get(f"{POLY_BASE}{endpoint}", params=p, timeout=15)
-        return r.json()
-    except Exception as e:
-        print(f"    ⚠️  Polygon error: {e}")
-        return None
 
 # --- FMP (REST) ---
 FMP_BASE = "https://financialmodelingprep.com/api/v3"
