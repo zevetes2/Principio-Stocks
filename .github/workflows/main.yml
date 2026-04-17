@@ -1,32 +1,47 @@
-name: Actualizacion Automatica Portafolio
+name: Update Portfolio ETH
 
-# Define cuándo se ejecuta el código
 on:
   schedule:
-    # Se ejecuta cada hora desde las 9:00 AM hasta las 5:00 PM (Hora RD)
-    # 13-21 en UTC equivale a 09:00-17:00 en RD
-    - cron: '17,47 13-21 * * 1-5'
-  workflow_dispatch:
+    - cron: '17,47 13-21 * * 1-5'   # Lunes–Viernes a las 14:00 UTC
+  workflow_dispatch:           # Ejecución manual desde GitHub UI
+
 jobs:
-  ejecutar-analisis:
+  update:
     runs-on: ubuntu-latest
-    
+
     steps:
-      - name: Copiar contenido del repositorio
-        uses: actions/checkout@v3
+      # ── 1. Checkout con Node.js 24 ──────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4          # ← era v3 (Node 20) → ahora v4 (Node 24)
 
-      - name: Configurar Python 3.10
-        uses: actions/setup-python@v4
+      # ── 2. Setup Python con Node.js 24 ──────────────────────────
+      - name: Set up Python
+        uses: actions/setup-python@v5      # ← era v4 (Node 20) → ahora v5 (Node 24)
         with:
-          python-version: '3.10'
+          python-version: '3.11'
+          cache: 'pip'
 
-      - name: Instalar dependencias
+      # ── 3. Instalar dependencias ─────────────────────────────────
+      - name: Install dependencies
         run: |
-          pip install gspread google-auth yfinance pandas numpy
+          pip install --upgrade pip
+          pip install yfinance gspread google-auth requests pandas numpy finnhub-python
 
-      - name: Crear archivo de credenciales JSON
-        # Este paso toma el "Secret" que guardaste y lo convierte en el archivo que tu código busca
+      # ── 4. Escribir credencial de Google desde secret ───────────
+      #       NUNCA guardes el JSON en el repo; usá GitHub Secrets
+      - name: Write Google credentials
         run: echo '${{ secrets.GOOGLE_JSON_KEY }}' > principios.json
 
-      - name: Ejecutar el script de Python
+      # ── 5. Ejecutar el script principal ─────────────────────────
+      - name: Run portfolio update
+        env:
+          ALPHA_VANTAGE_KEY: ${{ secrets.ALPHA_VANTAGE_KEY }}
+          POLYGON_KEY:       ${{ secrets.POLYGON_KEY }}
+          FMP_KEY:           ${{ secrets.FMP_KEY }}
+          FINNHUB_KEY:       ${{ secrets.FINNHUB_KEY }}
         run: python main.py
+
+      # ── 6. Limpiar credencial del disco ─────────────────────────
+      - name: Clean up credentials
+        if: always()                       # Corre incluso si el paso anterior falla
+        run: rm -f principios.json
