@@ -5,7 +5,7 @@ on:
   schedule:
     # Se ejecuta cada hora desde las 9:00 AM hasta las 5:00 PM (Hora RD)
     # 13-21 en UTC equivale a 09:00-17:00 en RD
-    - cron: '0,30 13-21 * * 1-5'
+    - cron: '17,47 13-21 * * 1-5'
   workflow_dispatch:
 jobs:
   ejecutar-analisis:
