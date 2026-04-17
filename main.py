@@ -46,7 +46,7 @@ FINNHUB_KEY       = _require_env("FINNHUB_KEY")          # https://finnhub.io/re
 spreadsheet_name = "Portafolio Financiero"
 worksheet_name   = "7 PRINCIPIOS"
 start_row = 7
-end_row   = 9
+end_row   = 184
 
 # ==============================================================
 # 🔑 AUTENTICACIÓN GOOGLE
