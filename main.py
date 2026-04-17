@@ -14,21 +14,42 @@ import time
 import os
 
 # ==============================================================
-# ⚙️  CONFIGURACIÓN DE APIs - LLENA TUS CLAVES AQUÍ
+# ⚙️  CONFIGURACIÓN DE APIs
 # ==============================================================
 JSON_KEY_FILE = "principios.json"
 
-# Obtener claves desde variables de entorno (recomendado) o directamente
-ALPHA_VANTAGE_KEY  = os.getenv("ALPHA_VANTAGE_KEY",  "F1T49OHT4AKBV0Y2")   # https://www.alphavantage.co/support/#api-key
-POLYGON_KEY        = os.getenv("POLYGON_KEY",         "TU_CLAVE_POLYGON")          # https://polygon.io/dashboard
-FMP_KEY            = os.getenv("FMP_KEY",             "ZwrwyI5G1wJiw5HlwIiViR8NdGa0Xcce")              # https://financialmodelingprep.com/developer/docs/
-FINNHUB_KEY        = os.getenv("FINNHUB_KEY",         "d6c9jc9r01qsiik1b3vgd6c9jc9r01qsiik1b400")          # https://finnhub.io/register
+# ── SEGURIDAD: claves leídas SOLO desde variables de entorno ──
+# NUNCA escribas una clave directamente en este archivo.
+# En GitHub Actions: agregá cada clave como Secret en
+#   Settings → Secrets and variables → Actions → New repository secret
+# En local: ejecutá antes de correr el script:
+#   export ALPHA_VANTAGE_KEY="tu_clave"
+#   export POLYGON_KEY="tu_clave"
+#   export FMP_KEY="tu_clave"
+#   export FINNHUB_KEY="tu_clave"
+# ──────────────────────────────────────────────────────────────
+def _require_env(name: str) -> str:
+    """Falla explícitamente si la variable de entorno no está definida."""
+    value = os.getenv(name)
+    if not value:
+        raise EnvironmentError(
+            f"\n❌ Variable de entorno '{name}' no encontrada.\n"
+            f"   → En GitHub Actions: agregala como Secret en Settings > Secrets.\n"
+            f"   → En local: ejecutá `export {name}=tu_clave` antes de correr el script.\n"
+        )
+    return value
+
+ALPHA_VANTAGE_KEY = _require_env("ALPHA_VANTAGE_KEY")   # https://www.alphavantage.co/support/#api-key
+POLYGON_KEY       = _require_env("POLYGON_KEY")          # https://polygon.io/dashboard
+FMP_KEY           = _require_env("FMP_KEY")              # https://financialmodelingprep.com/developer/docs/
+FINNHUB_KEY       = _require_env("FINNHUB_KEY")          # https://finnhub.io/register
 
 # Google Sheets
 spreadsheet_name = "Portafolio Financiero"
 worksheet_name   = "7 PRINCIPIOS"
 start_row = 7
-end_row   = 184
+end_row   = 9
+
 # ==============================================================
 # 🔑 AUTENTICACIÓN GOOGLE
 # ==============================================================
@@ -116,11 +137,6 @@ def finn_get(endpoint, params=None):
 # ==============================================================
 
 def get_info_field_multi(info_yf, field, symbol, fallbacks):
-    """
-    Intenta obtener un campo de yfinance primero,
-    luego ejecuta cada función de fallback en orden.
-    fallbacks: lista de funciones (sin args) que devuelven el valor o None
-    """
     val = info_yf.get(field)
     if val is not None and val != 0 and val != "":
         return val
@@ -138,19 +154,16 @@ def get_target_price(info, ticker_yf, symbol):
     val = info.get("targetMeanPrice")
     if val:
         return val
-    # Fallback FMP
     try:
         data = fmp_get(f"/price-target-consensus/{symbol}")
         if data and isinstance(data, list) and data:
             return data[0].get("targetConsensus")
     except: pass
-    # Fallback Finnhub
     try:
         data = finn_get("/stock/price-target", {"symbol": symbol})
         if data:
             return data.get("targetMean")
     except: pass
-    # Fallback Alpha Vantage (Analyst recommendations resumen)
     try:
         data = av_get("ANALYST_PRICE_TARGET", symbol)
         if data and "data" in data:
@@ -179,7 +192,6 @@ def get_rev_growth(info, symbol):
     val = info.get("revenueGrowth")
     if val:
         return val
-    # Polygon financials
     try:
         data = poly_get(f"/vX/reference/financials", {"ticker": symbol, "timeframe": "annual", "limit": 2})
         if data and "results" in data and len(data["results"]) >= 2:
@@ -188,7 +200,6 @@ def get_rev_growth(info, symbol):
             if rev_old and rev_old != 0:
                 return (rev_new - rev_old) / abs(rev_old)
     except: pass
-    # FMP
     try:
         data = fmp_get(f"/income-statement/{symbol}", params={"limit": 2})
         if data and isinstance(data, list) and len(data) >= 2:
@@ -272,7 +283,6 @@ def get_fcf(info, ticker_yf, symbol):
                 capex = cf.loc["Capital Expenditure"].iloc[0] if "Capital Expenditure" in cf.index else 0
                 return ocf + capex
     except: pass
-    # Polygon
     try:
         data = poly_get(f"/vX/reference/financials", {"ticker": symbol, "timeframe": "annual", "limit": 1})
         if data and "results" in data and data["results"]:
@@ -281,13 +291,11 @@ def get_fcf(info, ticker_yf, symbol):
             capex = abs(cf.get("capital_expenditure", {}).get("value", 0) or 0)
             return ocf - capex
     except: pass
-    # FMP
     try:
         data = fmp_get(f"/cash-flow-statement/{symbol}", params={"limit": 1})
         if data and isinstance(data, list) and data:
             return data[0].get("freeCashFlow")
     except: pass
-    # Alpha Vantage
     try:
         data = av_get("CASH_FLOW", symbol)
         if data and "annualReports" in data and data["annualReports"]:
@@ -331,7 +339,7 @@ def get_ebitda(info, symbol):
     try:
         data = finn_get("/stock/metric", {"symbol": symbol, "metric": "all"})
         if data and "metric" in data:
-            return data["metric"].get("ebitdaPerShare")  # approx
+            return data["metric"].get("ebitdaPerShare")
     except: pass
     return 0
 
@@ -425,7 +433,6 @@ def get_website(info, symbol):
 
 # ── Earnings History (Surprise %) ─────────────────────────────
 def get_earnings_history(ticker_yf, symbol):
-    """Retorna lista de surprisePercent o None."""
     try:
         eh = ticker_yf.earnings_history
         if eh is not None and not eh.empty and "surprisePercent" in eh.columns:
@@ -433,7 +440,6 @@ def get_earnings_history(ticker_yf, symbol):
             if clean:
                 return clean
     except: pass
-    # Finnhub earnings surprises
     try:
         data = finn_get("/stock/earnings", {"symbol": symbol, "limit": 12})
         if data and isinstance(data, list):
@@ -446,7 +452,6 @@ def get_earnings_history(ticker_yf, symbol):
             if surprises:
                 return surprises
     except: pass
-    # FMP earnings surprises
     try:
         data = fmp_get(f"/earnings-surprises/{symbol}")
         if data and isinstance(data, list):
@@ -525,7 +530,7 @@ def get_earning_estimate_avg(ticker_yf, symbol):
     try:
         df = ticker_yf.earnings_estimate
         if not df.empty:
-            return df.iloc[0, 0]  # current year avg
+            return df.iloc[0, 0]
     except: pass
     try:
         data = finn_get("/stock/eps-estimate", {"symbol": symbol, "freq": "annual"})
@@ -606,7 +611,6 @@ ranges = {
     'Official URL': f'DE{start_row}:DE{end_row}'
 }
 
-# Fuente usada por métrica (para logging)
 source_log = {}
 
 # ==============================================================
@@ -630,7 +634,6 @@ try:
             print(f"  Procesando: {symbol}")
             print(f"{'='*60}")
 
-            # Valores por defecto
             defaults = {
                 'Target Mean Price': "N/A", 'Analyst Count': 0, 'Target Dispersion': "0%",
                 'Earning Estimate AVG': "N/A", 'Rev_Growth_YoY': "0%", 'Gross_Margin': "0%",
@@ -652,7 +655,6 @@ try:
             def append_default(key):
                 all_results[key].append([defaults[key]])
 
-            # ── Inicializar yfinance ──────────────────────────────────
             try:
                 ticker = yf.Ticker(symbol)
                 info   = ticker.info or {}
@@ -665,19 +667,16 @@ try:
             # PRINCIPIO 1: PRECIO OBJETIVO
             # ═══════════════════════════════════════════════════════
 
-            # Target Mean Price
             try:
                 tp = get_target_price(info, ticker, symbol)
                 all_results['Target Mean Price'].append([tp if tp else "N/A"])
             except: append_default('Target Mean Price')
 
-            # Analyst Count
             try:
                 ac = get_analyst_count(info, symbol)
                 all_results['Analyst Count'].append([ac])
             except: append_default('Analyst Count')
 
-            # Target Dispersion
             try:
                 disp_val = "0%"
                 if ticker:
@@ -689,7 +688,6 @@ try:
                                 disp_val = f"{(th - tl) / tm:.2%}"
                     except: pass
                 if disp_val == "0%":
-                    # Fallback FMP
                     data = fmp_get(f"/price-target/{symbol}")
                     if data and isinstance(data, list) and data:
                         targets = [d.get("priceTarget", 0) for d in data if d.get("priceTarget")]
@@ -708,7 +706,6 @@ try:
                 rev_growth = get_rev_growth(info, symbol)
                 gross_margin, operating_margin = get_margins(info, symbol)
 
-                # Growth Momentum
                 growth_momentum = "N/A"
                 try:
                     if ticker:
@@ -723,7 +720,6 @@ try:
                                 growth_momentum = "ESTABLE"
                 except: pass
 
-                # Earning Estimate AVG
                 try:
                     eea = get_earning_estimate_avg(ticker, symbol) if ticker else None
                     all_results['Earning Estimate AVG'].append([f"${eea:.2f}" if eea else "N/A"])
@@ -753,7 +749,6 @@ try:
                         hist_p3 = ticker.history(start=start_date, end=end_date, interval="1d")
                     except: pass
 
-                # Fallback histórico desde Polygon
                 if hist_p3 is None or hist_p3.empty or len(hist_p3) < 250:
                     try:
                         end_str   = datetime.date.today().isoformat()
@@ -804,7 +799,6 @@ try:
                     recent_avg     = sum(surprise_data[:num_recent]) / num_recent
                     worst_miss     = min(surprise_data)
 
-                    # Weighted Consistency (sin cambios)
                     weighted_score = 0
                     for s in surprise_data:
                         if   s >  0.10: weighted_score += 1.5
@@ -815,7 +809,6 @@ try:
                         else:           weighted_score -= 0.5
                     weighted_consistency = weighted_score / total_quarters
 
-                    # Surprise Trend (sin cambios)
                     if len(surprise_data) >= 8:
                         r4 = sum(surprise_data[:4]) / 4
                         o4 = sum(surprise_data[4:8]) / 4
@@ -835,21 +828,14 @@ try:
                     else:
                         surprise_trend = "DATOS INSUFICIENTES"
 
-                    # ── NUEVO: Detección de racha reciente de misses ────────────────
-                    # Si los últimos 2 trimestres consecutivos son misses → señal de deterioro
                     racha_miss = False
                     if len(surprise_data) >= 2:
                         racha_miss = (surprise_data[0] < 0 and surprise_data[1] < 0)
 
-                    # Ajustar surprise_trend si hay racha de misses reciente
                     if racha_miss and "MEJORANDO" in surprise_trend:
-                        surprise_trend = "ÚLTIMO DETERIORO"  # Override: misses recientes pesan más
+                        surprise_trend = "ÚLTIMO DETERIORO"
                     elif racha_miss and surprise_trend == "ESTABLE":
                         surprise_trend = "DETERIORANDO LEVE"
-
-                    # ── NUEVO: Revenue Surprise 4Q — cálculo mejorado ───────────────
-                    # Si ya tienes datos de revenue surprise por trimestre, calcular avg de 4Q
-                    # (el código original ya hace esto — sin cambios necesarios)
 
                     all_results['Beat Rate'].append([f"{win_rate:.2%}"])
                     all_results['Recent 4Q Avg'].append([f"{recent_avg:.2%}"])
@@ -865,7 +851,6 @@ try:
                 for k in ['Beat Rate','Recent 4Q Avg','Worst Miss','Weighted Consistency','Surprise Trend']:
                     append_default(k)
 
-            # Revenue Surprise 4Q
             try:
                 rev_surp_val = None
                 if ticker:
@@ -882,7 +867,6 @@ try:
                                 if rsurps:
                                     rev_surp_val = sum(rsurps) / len(rsurps)
                     except: pass
-                # Fallback FMP
                 if rev_surp_val is None:
                     try:
                         data = fmp_get(f"/earnings-surprises/{symbol}")
@@ -899,12 +883,10 @@ try:
                 all_results['Revenue Surprise 4Q'].append([f"{rev_surp_val:.2%}" if rev_surp_val is not None else "N/A"])
             except: append_default('Revenue Surprise 4Q')
 
-            # Earnings Window
             try:
                 ew_val = "N/A"
                 timestamp = info.get("earningsTimestampStart")
                 if not timestamp:
-                    # Finnhub
                     try:
                         data = finn_get("/calendar/earnings", {"symbol": symbol})
                         if data and "earningsCalendar" in data and data["earningsCalendar"]:
@@ -927,28 +909,25 @@ try:
             # PRINCIPIO 5: VALORACIÓN FINANCIERA
             # ═══════════════════════════════════════════════════════
 
-            # Sección 1: Precio
             try:
                 peg_val     = get_peg(info, symbol)
                 forward_pe  = get_forward_pe(info, symbol)
                 all_results['PEG'].append([peg_val if peg_val else "N/A"])
                 all_results['Forward PE'].append([forward_pe if forward_pe else "N/A"])
 
-                # Interest Coverage
                 try:
                     cov_val = 0
+                    ebit = None
+                    interest = None
                     if ticker:
                         f = ticker.financials
-                        ebit = None
                         for label in ['Ebit', 'Operating Income', 'Operating Profit']:
                             if label in f.index:
                                 ebit = f.loc[label].iloc[0]; break
-                        interest = None
                         il = [i for i in f.index if 'Interest Expense' in i]
                         if il:
                             interest = abs(f.loc[il[0]].iloc[0])
-                    # Fallback FMP
-                    if (not ticker or ebit is None) or interest is None:
+                    if ebit is None or interest is None:
                         data = fmp_get(f"/ratios/{symbol}", params={"limit": 1})
                         if data and isinstance(data, list) and data:
                             cov_val = data[0].get("interestCoverage", 0) or 0
@@ -962,7 +941,6 @@ try:
             except:
                 append_default('PEG'); append_default('Interest Coverage'); append_default('Forward PE')
 
-            # Sección 2: FCF
             try:
                 market_cap = info.get("marketCap", 0)
                 revenue    = info.get("totalRevenue", 0)
@@ -977,13 +955,11 @@ try:
                 net_income = get_net_income(info, ticker, symbol) if ticker else 0
                 fcf        = get_fcf(info, ticker, symbol) if ticker else 0
 
-                # FCF Yield
                 if fcf and market_cap and market_cap > 0:
                     all_results['FCF Yield'].append([fcf / market_cap])
                 else:
                     append_default('FCF Yield')
 
-                # FCF Growth YoY
                 try:
                     fcf_growth = 0
                     if ticker:
@@ -1008,12 +984,10 @@ try:
                 for k in ['FCF Yield','FCF Growth YoY','FCF/NI Ratio','FCF Margin']:
                     append_default(k)
 
-            # Sección 3: Cash
             try:
                 cash_val = get_total_cash(info, symbol)
                 all_results['Total Cash'].append([cash_val if cash_val else 0])
 
-                # Operating Expense TTM
                 try:
                     op_exp = None
                     if ticker:
@@ -1031,13 +1005,11 @@ try:
             except:
                 append_default('Total Cash'); append_default('Operating Expense TTM')
 
-            # Sección 4: Deuda
             try:
                 total_debt = get_total_debt(info, symbol)
                 ebitda     = get_ebitda(info, symbol)
                 fcf_debt   = info.get("freeCashflow") or fcf or 0
 
-                # Total Equity
                 total_equity = info.get("totalStockholderEquity") or info.get("totalEquity")
                 if not total_equity:
                     try:
@@ -1056,7 +1028,6 @@ try:
 
                 all_results['Total Debt (mrq)'].append([f"${int(total_debt):,}" if isinstance(total_debt,(int,float)) and total_debt else "$0"])
 
-                # Interest Expense
                 ie_val = "N/A"
                 try:
                     if ticker:
@@ -1080,7 +1051,6 @@ try:
                 for k in ['Total Debt (mrq)','Interest Expense','Debt/Equity','Debt/EBITDA','Years to Pay Debt']:
                     append_default(k)
 
-            # Sección 5: Futuro Retorno
             try:
                 current_price  = info.get("currentPrice", 0)
                 market_cap     = info.get("marketCap", 0)
@@ -1089,14 +1059,11 @@ try:
                 forward_pe_val = info.get("forwardPE", 0)
                 profit_margin  = get_profit_margin(info, symbol)
 
-                # Revenue Estimate
                 revenue_next_year = get_revenue_estimate(ticker, symbol) if ticker else None
                 all_results['Revenue Estimate AVG'].append([f"{int(revenue_next_year):,.0f}" if revenue_next_year else "N/A"])
 
-                # Profit Margin
                 all_results['Profit Margin'].append([f"{profit_margin:.2%}" if profit_margin else "0"])
 
-                # P/E Promedio 6 meses
                 try:
                     avg_pe_val = "N/A"
                     if trailing_eps and trailing_eps > 0 and ticker:
@@ -1109,11 +1076,9 @@ try:
                     all_results['P/E Promedio 6 meses'].append([avg_pe_val])
                 except: append_default('P/E Promedio 6 meses')
 
-                # Future EPS
                 eps_next_year = get_eps_estimate(ticker, symbol) if ticker else None
                 all_results['Future EPS'].append([f"${eps_next_year:.2f}" if eps_next_year else "N/A"])
 
-                # Expected PE
                 if current_pe and forward_pe_val:
                     if current_pe > 30:      expected_pe = current_pe * 0.85
                     elif current_pe < 10:    expected_pe = current_pe * 1.10
@@ -1123,7 +1088,6 @@ try:
                 else:                        expected_pe = 15
                 all_results['Expected PE'].append([f"{expected_pe:.1f}"])
 
-                # Expected Returns
                 has_a = has_b = has_c = False
                 method_a = method_b = method_c = 0
 
@@ -1149,7 +1113,6 @@ try:
                 else:
                     append_default('Expected Return (Analyst)')
 
-                # Consensus
                 rets, wgts = [], []
                 if has_a: rets.append(method_a); wgts.append(0.5)
                 if has_b: rets.append(method_b); wgts.append(0.3)
@@ -1166,7 +1129,7 @@ try:
                     append_default(k)
 
             # ═══════════════════════════════════════════════════════
-            # PRINCIPIO 6: SOPORTES Y RESISTENCIAS — MEJORADO
+            # PRINCIPIO 6: SOPORTES Y RESISTENCIAS
             # ═══════════════════════════════════════════════════════
             try:
                 hist_p6 = None
@@ -1175,10 +1138,8 @@ try:
                         end_d = datetime.datetime.today()
                         start_d = end_d - datetime.timedelta(days=200)
                         hist_p6 = ticker.history(start=start_d, end=end_d, interval="1d")
-                    except:
-                        pass
+                    except: pass
 
-                # Fallback Polygon OHLCV
                 if hist_p6 is None or hist_p6.empty or len(hist_p6) < 50:
                     try:
                         end_str = datetime.date.today().isoformat()
@@ -1187,11 +1148,9 @@ try:
                                         {"adjusted": "true", "sort": "asc", "limit": 300})
                         if data and "results" in data and data["results"]:
                             df = pd.DataFrame(data["results"])
-                            df.rename(columns={"o":"Open","h":"High","l":"Low","c":"Close","v":"Volume"},
-                                      inplace=True)
+                            df.rename(columns={"o":"Open","h":"High","l":"Low","c":"Close","v":"Volume"}, inplace=True)
                             hist_p6 = df
-                    except:
-                        pass
+                    except: pass
 
                 if hist_p6 is not None and not hist_p6.empty and len(hist_p6) >= 50:
                     cp     = hist_p6['Close'].iloc[-1]
@@ -1201,21 +1160,19 @@ try:
                     all_results['Min 200d'].append([round(min_200d, 4)])
                     all_results['Max 200d'].append([round(max_200d, 4)])
 
-                    # ── MEJORA: cluster_size dinámico basado en ATR ──────────────
-                    # En lugar de cp * 0.005 fijo, usar ATR de 14 días
                     if len(hist_p6) >= 14:
                         hist_p6['HL'] = hist_p6['High'] - hist_p6['Low']
                         atr_p6 = hist_p6['HL'].tail(14).mean()
-                        cluster_size = max(atr_p6 * 0.5, cp * 0.003)  # mínimo 0.3% del precio
+                        cluster_size = max(atr_p6 * 0.5, cp * 0.003)
                     else:
-                        cluster_size = cp * 0.005  # fallback original
+                        cluster_size = cp * 0.005
 
                     lows    = hist_p6['Low'].values
                     highs   = hist_p6['High'].values
                     closes  = hist_p6['Close'].values
                     volumes = hist_p6['Volume'].values
 
-                    def calc_levels(prices, vols, n=4):  # ahora devuelve top 4 niveles
+                    def calc_levels(prices, vols, n=4):
                         rounded = np.round(prices / cluster_size) * cluster_size
                         data_d = {}
                         for price_r, vol in zip(rounded, vols):
@@ -1237,31 +1194,6 @@ try:
                     support_levels    = calc_levels(lows,  volumes)
                     resistance_levels = calc_levels(highs, volumes)
 
-                    # ── MEJORA: Point of Control (POC) ──────────────────────────
-                    # Nivel de precio con mayor volumen acumulado
-                    poc_price = None
-                    poc_side  = "N/A"
-                    try:
-                        # Volume profile: dividir el rango en 20 bins
-                        price_min = min_200d
-                        price_max = max_200d
-                        n_bins = 20
-                        bin_size = (price_max - price_min) / n_bins
-                        if bin_size > 0:
-                            vol_profile = {}
-                            for c, v in zip(closes, volumes):
-                                b = round((c - price_min) / bin_size)
-                                b = max(0, min(n_bins - 1, b))
-                                price_level = round(price_min + b * bin_size, 2)
-                                vol_profile[price_level] = vol_profile.get(price_level, 0) + v
-                            poc_price = max(vol_profile, key=vol_profile.get)
-                            poc_side  = "SOPORTE" if cp > poc_price else "RESISTENCIA"
-                    except:
-                        pass
-
-                    # ── Distancias: CORRECCIÓN de nombres BR7 / BS7 ─────────────
-                    # BS7 = Distancia al Soporte más cercano (por debajo del precio)
-                    # BR7 = Distancia a la Resistencia más cercana (por encima del precio)
                     s_below = [s for s in support_levels    if s < cp]
                     r_above = [r for r in resistance_levels if r > cp]
 
@@ -1271,7 +1203,6 @@ try:
                     dist_to_support    = (cp - nearest_support)    / cp if nearest_support    else 1
                     dist_to_resistance = (nearest_resistance - cp) / cp if nearest_resistance else 1
 
-                    # Clasificación BU7
                     if   cp > max_200d:                pos = "Rompimiento al alza"
                     elif cp < min_200d:                pos = "Rompimiento bajista"
                     elif dist_to_resistance < 0.02:    pos = "Cerca de resistencia"
@@ -1285,14 +1216,8 @@ try:
                     all_results['Posición S/R'].append([pos])
                     all_results['Soporte Cercano'].append([round(nearest_support, 4)])
                     all_results['Resistencia Cercana'].append([round(nearest_resistance, 4)])
-
-                    # CORRECCIÓN CRÍTICA: BS7 = soporte, BR7 = resistencia
-                    all_results['Dist a Soporte %'].append([round(dist_to_support, 6)])      # → BS7
-                    all_results['Dist a Resistencia %'].append([round(dist_to_resistance, 6)]) # → BR7
-
-                    # Escritura de POC en columnas (agregar a ranges dict si usas columnas nuevas)
-                    # all_results['POC Price'].append([poc_price if poc_price else "N/A"])
-                    # all_results['POC Side'].append([poc_side])
+                    all_results['Dist a Soporte %'].append([round(dist_to_support, 6)])
+                    all_results['Dist a Resistencia %'].append([round(dist_to_resistance, 6)])
 
                 else:
                     for k in ['Min 200d','Max 200d','Soportes','Resistencias','Posición S/R',
@@ -1322,7 +1247,6 @@ try:
                         hist_p7 = ticker.history(start=start_d, end=end_d, interval="1d")
                     except: pass
 
-                # Fallback Polygon
                 if hist_p7 is None or hist_p7.empty or len(hist_p7) < 70:
                     try:
                         end_str   = datetime.date.today().isoformat()
@@ -1377,20 +1301,18 @@ try:
                 for k in ['Williams %R (Current)','Williams %R (1w ago)','Williams %R (2w ago)','Williams %R (Daily)']:
                     all_results[k].append([0])
 
-# ═══════════════════════════════════════════════════════
-# PRINCIPIO 8: VOLUMEN Y MOMENTUM — MEJORADO
-# ═══════════════════════════════════════════════════════
+            # ═══════════════════════════════════════════════════════
+            # PRINCIPIO 8: VOLUMEN Y MOMENTUM
+            # ═══════════════════════════════════════════════════════
             try:
                 hist_p8 = None
                 if ticker:
                     try:
                         end_d   = datetime.datetime.today()
-                        start_d = end_d - datetime.timedelta(days=120)  # ← extendido de 90 a 120 días
+                        start_d = end_d - datetime.timedelta(days=120)
                         hist_p8 = ticker.history(start=start_d, end=end_d, interval="1d")
-                    except:
-                        pass
+                    except: pass
 
-                # Fallback Polygon
                 if hist_p8 is None or hist_p8.empty or len(hist_p8) < 50:
                     try:
                         end_str   = datetime.date.today().isoformat()
@@ -1401,11 +1323,9 @@ try:
                         )
                         if data and "results" in data and data["results"]:
                             df = pd.DataFrame(data["results"])
-                            df.rename(columns={"h":"High","l":"Low","c":"Close","v":"Volume"},
-                                      inplace=True)
+                            df.rename(columns={"h":"High","l":"Low","c":"Close","v":"Volume"}, inplace=True)
                             hist_p8 = df
-                    except:
-                        pass
+                    except: pass
 
                 if hist_p8 is not None and not hist_p8.empty and len(hist_p8) >= 50:
                     avg_vol_20 = hist_p8['Volume'].tail(20).mean()
@@ -1423,7 +1343,6 @@ try:
                     all_results['Volume Ratio'].append([round(vol_ratio, 4)])
                     all_results['Volume Level'].append([vol_level])
 
-                    # OBV — ahora con 120 días de historial
                     obv = [0]
                     for i in range(1, len(hist_p8)):
                         if   hist_p8['Close'].iloc[i] > hist_p8['Close'].iloc[i-1]:
@@ -1436,7 +1355,6 @@ try:
                     hist_p8 = hist_p8.copy()
                     hist_p8['OBV'] = obv
 
-                    # Comparar OBV actual vs promedio de 30 días (más robusto que 20d)
                     obv_sma30 = hist_p8['OBV'].tail(30).mean()
                     obv_cur   = hist_p8['OBV'].iloc[-1]
 
@@ -1446,7 +1364,6 @@ try:
 
                     all_results['OBV Trend'].append([obv_trend])
 
-                    # Price-Volume Divergence
                     pc20 = (hist_p8['Close'].iloc[-1] - hist_p8['Close'].iloc[-20]) / \
                           hist_p8['Close'].iloc[-20] if len(hist_p8) >= 20 else 0
                     vc20 = (avg_vol_20 - avg_vol_50) / avg_vol_50 if avg_vol_50 > 0 else 0
@@ -1459,7 +1376,6 @@ try:
 
                     all_results['Price-Volume Div'].append([div])
 
-                    # MFI — sin cambios en el cálculo, solo el peso en Sheets cambia
                     tp_series = (hist_p8['High'] + hist_p8['Low'] + hist_p8['Close']) / 3
                     mf_series = tp_series * hist_p8['Volume']
                     pos_flow, neg_flow = [], []
@@ -1505,10 +1421,8 @@ try:
             # DATOS ADICIONALES
             # ═══════════════════════════════════════════════════════
 
-            # Sector
             all_results['Sector'].append([get_sector(info, symbol)])
 
-            # Days Public
             try:
                 dp_val = defaults['Days Public']
                 if ticker:
@@ -1516,7 +1430,6 @@ try:
                     if not hist_max.empty:
                         dp_val = int((datetime.date.today() - hist_max.index.min().date()).days)
                 if dp_val == "N/A":
-                    # Polygon IPO date
                     data = poly_get(f"/v3/reference/tickers/{symbol}")
                     if data and "results" in data:
                         ipo = data["results"].get("list_date")
@@ -1525,10 +1438,7 @@ try:
                 all_results['Days Public'].append([dp_val])
             except: append_default('Days Public')
 
-            # Beta
             all_results['Beta'].append([get_beta(info, symbol)])
-
-            # URL Oficial
             all_results['Official URL'].append([get_website(info, symbol)])
 
             print(f"  ✅ {symbol} procesado.")
