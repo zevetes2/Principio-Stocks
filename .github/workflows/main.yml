@@ -36,7 +36,6 @@ jobs:
       - name: Run portfolio update
         env:
           ALPHA_VANTAGE_KEY: ${{ secrets.ALPHA_VANTAGE_KEY }}
-          POLYGON_KEY:       ${{ secrets.POLYGON_KEY }}
           FMP_KEY:           ${{ secrets.FMP_KEY }}
           FINNHUB_KEY:       ${{ secrets.FINNHUB_KEY }}
         run: python main.py
