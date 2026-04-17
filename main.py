@@ -28,8 +28,7 @@ FINNHUB_KEY        = os.getenv("FINNHUB_KEY",         "d6c9jc9r01qsiik1b3vgd6c9j
 spreadsheet_name = "Portafolio Financiero"
 worksheet_name   = "7 PRINCIPIOS"
 start_row = 7
-end_row   = 23
-
+end_row   = 184
 # ==============================================================
 # 🔑 AUTENTICACIÓN GOOGLE
 # ==============================================================
