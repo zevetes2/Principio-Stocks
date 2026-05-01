@@ -12,6 +12,10 @@ import numpy as np
 import requests
 import time
 import os
+from dotenv import load_dotenv
+
+# Esto busca el archivo .env y carga su contenido
+load_dotenv()
 
 # ==============================================================
 # ⚙️  CONFIGURACIÓN DE APIs
@@ -39,14 +43,14 @@ def _require_env(name: str) -> str:
     return value
 
 ALPHA_VANTAGE_KEY = _require_env("ALPHA_VANTAGE_KEY")   # https://www.alphavantage.co/support/#api-key
-FMP_KEY           = _require_env("FMP_KEY")              # https://financialmodelingprep.com/developer/docs/
+FMP_KEY          = _require_env("FMP_KEY")              # https://financialmodelingprep.com/developer/docs/
 FINNHUB_KEY       = _require_env("FINNHUB_KEY")          # https://finnhub.io/register
 
 # Google Sheets
 spreadsheet_name = "Portafolio Financiero"
 worksheet_name   = "7 PRINCIPIOS"
 start_row = 7
-end_row   = 184
+end_row   = 190
 
 # ==============================================================
 # 🔑 AUTENTICACIÓN GOOGLE
@@ -266,7 +270,7 @@ def get_fcf(info, ticker_yf, symbol):
             elif "Operating Cash Flow" in cf.index:
                 ocf = cf.loc["Operating Cash Flow"].iloc[0]
                 capex = cf.loc["Capital Expenditure"].iloc[0] if "Capital Expenditure" in cf.index else 0
-                return ocf + capex
+                return ocf - abs(capex)
     except: pass
     try:
         data = poly_get(f"/vX/reference/financials", {"ticker": symbol, "timeframe": "annual", "limit": 1})
@@ -578,8 +582,8 @@ ranges = {
     'Posición S/R': f'BU{start_row}:BU{end_row}',
     'Soporte Cercano': f'BQ{start_row}:BQ{end_row}',
     'Resistencia Cercana': f'BP{start_row}:BP{end_row}',
-    'Dist a Soporte %': f'BR{start_row}:BR{end_row}',
-    'Dist a Resistencia %': f'BS{start_row}:BS{end_row}',
+    'Dist a Soporte %': f'BS{start_row}:BS{end_row}',
+    'Dist a Resistencia %': f'BR{start_row}:BR{end_row}',
     'Williams %R (Current)': f'BV{start_row}:BV{end_row}',
     'Williams %R (1w ago)': f'BW{start_row}:BW{end_row}',
     'Williams %R (2w ago)': f'BX{start_row}:BX{end_row}',
@@ -620,7 +624,7 @@ try:
             print(f"{'='*60}")
 
             defaults = {
-                'Target Mean Price': "N/A", 'Analyst Count': 0, 'Target Dispersion': "0%",
+                'Target Mean Price': "", 'Analyst Count': 0, 'Target Dispersion': "",
                 'Earning Estimate AVG': "N/A", 'Rev_Growth_YoY': "0%", 'Gross_Margin': "0%",
                 'Operating_Margin': "0%", 'Growth_Momentum': "N/A", 'SMA_200': "N/A",
                 'SMA_Trend': "N/A", 'Volatility_ATR': "N/A", 'Weighted Consistency': "N/A",
@@ -710,9 +714,9 @@ try:
                     all_results['Earning Estimate AVG'].append([f"${eea:.2f}" if eea else "N/A"])
                 except: append_default('Earning Estimate AVG')
 
-                all_results['Rev_Growth_YoY'].append([f"{rev_growth:.2%}" if rev_growth else "0%"])
-                all_results['Gross_Margin'].append([f"{gross_margin:.2%}" if gross_margin else "0%"])
-                all_results['Operating_Margin'].append([f"{operating_margin:.2%}" if operating_margin else "0%"])
+                all_results['Rev_Growth_YoY'].append([rev_growth])         
+                all_results['Gross_Margin'].append([gross_margin])
+                all_results['Operating_Margin'].append([operating_margin])
                 all_results['Growth_Momentum'].append([growth_momentum])
             except:
                 append_default('Earning Estimate AVG')
@@ -764,7 +768,7 @@ try:
 
                     all_results['SMA_200'].append([f"${sma_200_current:.2f}"])
                     all_results['SMA_Trend'].append([sma_trend])
-                    all_results['Volatility_ATR'].append([f"{vol_pct:.2%}"])
+                    all_results['Volatility_ATR'].append([vol_pct])
                 else:
                     append_default('SMA_200'); append_default('SMA_Trend'); append_default('Volatility_ATR')
             except:
@@ -822,10 +826,10 @@ try:
                     elif racha_miss and surprise_trend == "ESTABLE":
                         surprise_trend = "DETERIORANDO LEVE"
 
-                    all_results['Beat Rate'].append([f"{win_rate:.2%}"])
-                    all_results['Recent 4Q Avg'].append([f"{recent_avg:.2%}"])
-                    all_results['Worst Miss'].append([f"{worst_miss:.2%}"])
-                    all_results['Weighted Consistency'].append([f"{weighted_consistency:.2f}"])
+                    all_results['Beat Rate'].append([win_rate])
+                    all_results['Recent 4Q Avg'].append([recent_avg])
+                    all_results['Worst Miss'].append([worst_miss])
+                    all_results['Weighted Consistency'].append([round(weighted_consistency, 4)])
                     all_results['Surprise Trend'].append([surprise_trend])
 
                 else:
@@ -865,7 +869,7 @@ try:
                             if rsurps:
                                 rev_surp_val = sum(rsurps) / len(rsurps)
                     except: pass
-                all_results['Revenue Surprise 4Q'].append([f"{rev_surp_val:.2%}" if rev_surp_val is not None else "N/A"])
+                all_results['Revenue Surprise 4Q'].append([rev_surp_val])
             except: append_default('Revenue Surprise 4Q')
 
             try:
@@ -1116,6 +1120,24 @@ try:
             # ═══════════════════════════════════════════════════════
             # PRINCIPIO 6: SOPORTES Y RESISTENCIAS
             # ═══════════════════════════════════════════════════════
+            def calc_levels(prices, vols, cluster_size, n=4):
+                rounded = np.round(prices / cluster_size) * cluster_size
+                data_d = {}
+                for price_r, vol in zip(rounded, vols):
+                    if price_r not in data_d:
+                        data_d[price_r] = {'count': 0, 'volume': 0}
+                    data_d[price_r]['count']  += 1
+                    data_d[price_r]['volume'] += vol
+                if not data_d:
+                    return []
+                mx_c = max(d['count']  for d in data_d.values())
+                mx_v = max(d['volume'] for d in data_d.values())
+                scores = {
+                    p: (d['count'] / mx_c * 0.6 + d['volume'] / mx_v * 0.4)
+                    for p, d in data_d.items()
+                }
+                top_n = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:n]
+                return sorted([round(p, 2) for p, _ in top_n])
             try:
                 hist_p6 = None
                 if ticker:
@@ -1157,27 +1179,8 @@ try:
                     closes  = hist_p6['Close'].values
                     volumes = hist_p6['Volume'].values
 
-                    def calc_levels(prices, vols, n=4):
-                        rounded = np.round(prices / cluster_size) * cluster_size
-                        data_d = {}
-                        for price_r, vol in zip(rounded, vols):
-                            if price_r not in data_d:
-                                data_d[price_r] = {'count': 0, 'volume': 0}
-                            data_d[price_r]['count']  += 1
-                            data_d[price_r]['volume'] += vol
-                        if not data_d:
-                            return []
-                        mx_c = max(d['count']  for d in data_d.values())
-                        mx_v = max(d['volume'] for d in data_d.values())
-                        scores = {
-                            p: (d['count'] / mx_c * 0.6 + d['volume'] / mx_v * 0.4)
-                            for p, d in data_d.items()
-                        }
-                        top_n = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:n]
-                        return sorted([round(p, 2) for p, _ in top_n])
-
-                    support_levels    = calc_levels(lows,  volumes)
-                    resistance_levels = calc_levels(highs, volumes)
+                    support_levels    = calc_levels(lows,  volumes, cluster_size)
+                    resistance_levels = calc_levels(highs, volumes, cluster_size)
 
                     s_below = [s for s in support_levels    if s < cp]
                     r_above = [r for r in resistance_levels if r > cp]
@@ -1375,7 +1378,15 @@ try:
                     if len(pos_flow) >= 14:
                         pmf = sum(pos_flow[-14:])
                         nmf = sum(neg_flow[-14:])
-                        mfi_val = 100 - (100 / (1 + pmf / nmf)) if nmf > 0 else 100
+                        # --- CÁLCULO SEGURO DEL MFI ---
+                        if nmf == 0 and pmf == 0:
+                            mfi_val = 50  # Neutral: no hubo flujo en ninguna dirección
+                        elif nmf == 0:
+                            mfi_val = 100 # Todo el flujo fue positivo
+                        else:
+                            # Cálculo estándar si nmf es mayor a 0
+                            mfi_val = 100 - (100 / (1 + pmf / nmf))
+                        # ------------------------------
 
                         if   mfi_val > 80: mfi_level = "SOBRECOMPRADO"
                         elif mfi_val > 60: mfi_level = "COMPRADO"
