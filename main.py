@@ -49,7 +49,7 @@ FINNHUB_KEY       = _require_env("FINNHUB_KEY")          # https://finnhub.io/re
 # Google Sheets
 spreadsheet_name = "Portafolio Financiero"
 worksheet_name   = "7 PRINCIPIOS"
-start_row = 28
+start_row = 7
 end_row   = 190
 
 # ==============================================================
@@ -925,7 +925,6 @@ try:
                                 rev_prev   = float(rev_series.iloc[1])
                                 if rev_prev != 0:
                                     rev_surp_val = (rev_actual - rev_prev) / abs(rev_prev)
-                                    print(f"    Revenue Surprise (yf proxy QoQ): {rev_surp_val:.2%}")
                     except Exception as e:
                         print(f"    ⚠️ yfinance revenue proxy error: {e}")
 
