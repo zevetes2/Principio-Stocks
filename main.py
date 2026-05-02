@@ -49,7 +49,7 @@ FINNHUB_KEY       = _require_env("FINNHUB_KEY")          # https://finnhub.io/re
 # Google Sheets
 spreadsheet_name = "Portafolio Financiero"
 worksheet_name   = "7 PRINCIPIOS"
-start_row = 7
+start_row = 28
 end_row   = 190
 
 # ==============================================================
@@ -842,35 +842,101 @@ try:
 
             try:
                 rev_surp_val = None
-                if ticker:
-                    try:
-                        eh = ticker.earnings_history
-                        if eh is not None and not eh.empty:
-                            if 'revenueEstimate' in eh.columns and 'revenue' in eh.columns:
-                                rsurps = []
-                                for _, row in eh.head(4).iterrows():
-                                    if pd.notna(row.get('revenue')) and pd.notna(row.get('revenueEstimate')):
-                                        est = row['revenueEstimate']
-                                        if est > 0:
-                                            rsurps.append((row['revenue'] - est) / est)
-                                if rsurps:
-                                    rev_surp_val = sum(rsurps) / len(rsurps)
-                    except: pass
+
+                # ── Fuente 1: Finnhub — revenue real vs estimado por trimestre ──
                 if rev_surp_val is None:
                     try:
-                        data = fmp_get(f"/earnings-surprises/{symbol}")
+                        data = finn_get("/stock/earnings", {"symbol": symbol, "limit": 8})
                         if data and isinstance(data, list):
                             rsurps = []
                             for d in data[:4]:
-                                actual = d.get("actualEarningResult")
-                                est    = d.get("estimatedEarning")
-                                if actual is not None and est and est != 0:
-                                    rsurps.append((actual - est) / abs(est))
+                                rev_actual = d.get("revenueActual")   # ingresos reales
+                                rev_est    = d.get("revenueEstimate") # ingresos estimados
+                                if (rev_actual is not None and
+                                    rev_est    is not None and
+                                    rev_est != 0):
+                                    rsurps.append((rev_actual - rev_est) / abs(rev_est))
                             if rsurps:
                                 rev_surp_val = sum(rsurps) / len(rsurps)
-                    except: pass
-                all_results['Revenue Surprise 4Q'].append([rev_surp_val])
-            except: append_default('Revenue Surprise 4Q')
+                                print(f"    Revenue Surprise (Finnhub): {rev_surp_val:.2%}")
+                    except Exception as e:
+                        print(f"    ⚠️ Finnhub revenue surprise error: {e}")
+
+                # ── Fuente 2: FMP — income-statement trimestral vs analyst-estimates ──
+                if rev_surp_val is None:
+                    try:
+                        # Revenue real de los últimos 4 trimestres
+                        actual_data = fmp_get(
+                            f"/income-statement/{symbol}",
+                            params={"limit": 4, "period": "quarter"}
+                        )
+                        # Estimados históricos de revenue por trimestre
+                        est_data = fmp_get(
+                            f"/analyst-estimates/{symbol}",
+                            params={"limit": 8, "period": "quarter"}
+                        )
+
+                        if (actual_data and isinstance(actual_data, list) and
+                            est_data   and isinstance(est_data,   list)):
+
+                            rsurps = []
+                            for actual_q in actual_data[:4]:
+                                q_date  = actual_q.get("date", "")[:7]  # "2024-09"
+                                rev_real = actual_q.get("revenue", 0)
+
+                                # Buscar el estimado del mismo período
+                                est_match = next(
+                                    (e for e in est_data
+                                    if e.get("date", "")[:7] == q_date),
+                                    None
+                                )
+
+                                if est_match:
+                                    rev_est = est_match.get("estimatedRevenueAvg", 0)
+                                    if rev_real and rev_est and rev_est != 0:
+                                        rsurps.append((rev_real - rev_est) / abs(rev_est))
+
+                            if rsurps:
+                                rev_surp_val = sum(rsurps) / len(rsurps)
+                                print(f"    Revenue Surprise (FMP): {rev_surp_val:.2%}")
+                    except Exception as e:
+                        print(f"    ⚠️ FMP revenue surprise error: {e}")
+
+                # ── Fuente 3: yfinance — quarterly_financials vs revenue_estimate ──
+                # (yfinance NO tiene revenue surprise histórico directo,
+                #  pero se puede aproximar con ingresos reales trimestrales)
+                if rev_surp_val is None and ticker:
+                    try:
+                        qf = ticker.quarterly_financials
+                        re = ticker.revenue_estimate  # solo estimados futuros
+
+                        # Alternativa: usar quarterly_income_stmt para revenue real
+                        qis = ticker.quarterly_income_stmt
+                        rev_rows = [r for r in qis.index
+                                    if 'Total Revenue' in r or 'revenue' in r.lower()]
+
+                        if rev_rows and not qis.empty:
+                            # No hay estimados históricos en yfinance para revenue,
+                            # usar el crecimiento QoQ como proxy de sorpresa
+                            rev_series = qis.loc[rev_rows[0]].dropna()
+                            if len(rev_series) >= 2:
+                                # Sorpresa aproximada: diferencia vs trimestre anterior
+                                rev_actual = float(rev_series.iloc[0])
+                                rev_prev   = float(rev_series.iloc[1])
+                                if rev_prev != 0:
+                                    rev_surp_val = (rev_actual - rev_prev) / abs(rev_prev)
+                                    print(f"    Revenue Surprise (yf proxy QoQ): {rev_surp_val:.2%}")
+                    except Exception as e:
+                        print(f"    ⚠️ yfinance revenue proxy error: {e}")
+
+                # Escribir resultado — formato decimal puro (no texto con %)
+                all_results['Revenue Surprise 4Q'].append(
+                    [rev_surp_val if rev_surp_val is not None else "N/A"]
+                )
+
+            except Exception as e:
+                print(f"    ⚠️ Revenue Surprise bloque general error: {e}")
+                append_default('Revenue Surprise 4Q')
 
             try:
                 ew_val = "N/A"
