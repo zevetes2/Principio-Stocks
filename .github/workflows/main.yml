@@ -1,29 +1,26 @@
-name: Principio Stocks - Daily Update
+name: Update Portfolio ETH
 
 on:
-  # Ejecutar automáticamente cada día a las 9:00 AM UTC
   schedule:
-    - cron: '0 9 * * *'
-  
-  # Permitir ejecución manual desde GitHub
-  workflow_dispatch:
+    - cron: '17,47 13-21 * * 1-5'   # Lunes–Viernes cada 30 min entre 13:17-21:47 UTC
+  workflow_dispatch:                # Ejecución manual desde GitHub UI
 
 jobs:
   update-and-deploy:
     runs-on: ubuntu-latest
     
     steps:
-      # 1. Checkout del código
+      # ── 1. Checkout del código ─────────────────────────────────
       - name: Checkout repository
         uses: actions/checkout@v4
       
-      # 2. Setup Python
+      # ── 2. Setup Python ────────────────────────────────────────
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
       
-      # 3. Cache de dependencias
+      # ── 3. Cache de dependencias ───────────────────────────────
       - name: Cache pip packages
         uses: actions/cache@v3
         with:
@@ -32,17 +29,16 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pip-
       
-      # 4. Instalar dependencias
+      # ── 4. Instalar dependencias ───────────────────────────────
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install -r requirements-firebase.txt  # o solo requirements.txt si unificaste
       
-      # 5. Crear archivos de configuración desde Secrets
+      # ── 5. Crear archivos de configuración desde Secrets ───────
       - name: Setup Google Service Account
         env:
-          GOOGLE_CREDS: ${{ secrets.GOOGLE_SERVICE_ACCOUNT }}
+          GOOGLE_CREDS: ${{ secrets.GOOGLE_JSON_KEY }}
         run: |
           echo "$GOOGLE_CREDS" > principios.json
       
@@ -52,7 +48,7 @@ jobs:
         run: |
           echo "$FIREBASE_CREDS" > firebase-service-key.json
       
-      # 6. Crear archivo .env con API keys
+      # ── 6. Crear archivo .env con API keys ─────────────────────
       - name: Setup environment variables
         env:
           ALPHA_VANTAGE_KEY: ${{ secrets.ALPHA_VANTAGE_KEY }}
@@ -65,12 +61,12 @@ jobs:
           FINNHUB_KEY=$FINNHUB_KEY
           EOF
       
-      # 7. Ejecutar el script principal
+      # ── 7. Ejecutar el script principal ────────────────────────
       - name: Run main.py
         run: |
           python main.py
       
-      # 8. Subir logs como artefactos (opcional, para debugging)
+      # ── 8. Subir logs como artefactos (debugging) ──────────────
       - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v4
@@ -79,14 +75,3 @@ jobs:
           path: |
             *.log
             output/
-      
-      # 9. Deploy frontend a GitHub Pages (opcional)
-      # Descomenta si quieres hostear el HTML/JS/CSS en GitHub Pages
-      # - name: Deploy to GitHub Pages
-      #   if: github.ref == 'refs/heads/main'
-      #   uses: peaceiris/actions-gh-pages@v3
-      #   with:
-      #     github_token: ${{ secrets.GITHUB_TOKEN }}
-      #     publish_dir: ./frontend  # o la carpeta donde estén tus archivos HTML/JS/CSS
-
-      
