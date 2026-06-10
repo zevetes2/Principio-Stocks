@@ -1,9 +1,12 @@
-name: Update Portfolio ETH
+name: Principio Stocks - Daily Update
 
 on:
+  # Ejecutar automáticamente cada día a las 9:00 AM UTC
   schedule:
-    - cron: '17,47 13-21 * * 1-5'   # Lunes–Viernes a las 14:00 UTC
-  workflow_dispatch:           # Ejecución manual desde GitHub UI
+    - cron: '0 9 * * *'
+  
+  # Permitir ejecución manual desde GitHub
+  workflow_dispatch:
 
 jobs:
   update-and-deploy:
@@ -51,16 +54,6 @@ jobs:
       
       # 6. Crear archivo .env con API keys
       - name: Setup environment variables
-          pip install --upgrade pip
-          pip install yfinance gspread google-auth requests pandas numpy finnhub-python python-dotenv
-
-      # ── 4. Escribir credencial de Google desde secret ───────────
-      #       NUNCA guardes el JSON en el repo; usá GitHub Secrets
-      - name: Write Google credentials
-        run: echo '${{ secrets.GOOGLE_JSON_KEY }}' > principios.json
-
-      # ── 5. Ejecutar el script principal ─────────────────────────
-      - name: Run portfolio update
         env:
           ALPHA_VANTAGE_KEY: ${{ secrets.ALPHA_VANTAGE_KEY }}
           FMP_KEY: ${{ secrets.FMP_KEY }}
@@ -95,3 +88,5 @@ jobs:
       #   with:
       #     github_token: ${{ secrets.GITHUB_TOKEN }}
       #     publish_dir: ./frontend  # o la carpeta donde estén tus archivos HTML/JS/CSS
+
+      
