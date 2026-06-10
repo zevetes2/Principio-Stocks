@@ -1,5 +1,11 @@
+# Dependencias base (ya las tienes)
 gspread
 google-auth
 yfinance
 pandas
 numpy
+requests
+python-dotenv
+
+# Firebase
+firebase-admin

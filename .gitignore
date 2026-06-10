@@ -1,0 +1,25 @@
+# Claves privadas (NUNCA subir)
+principios.json
+firebase-service-key.json
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+
+# Entornos virtuales
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+
+# Sistema
+.DS_Store
+Thumbs.db
