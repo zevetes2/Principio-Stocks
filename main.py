@@ -35,8 +35,11 @@ logger = logging.getLogger("PortafolioETH")
 # ⚙️  CONFIGURACIÓN DE APIs Y ENTORNO
 # ==============================================================
 load_dotenv()
+<<<<<<< HEAD
 # Detectar si estamos en GitHub Actions
 IS_GITHUB_ACTIONS = os.getenv('GITHUB_ACTIONS') == 'true'
+=======
+>>>>>>> 35f37ce87e2295637d6868becf2826bf9de5b33c
 JSON_KEY_FILE = "principios.json"
 SERVICE_ACCOUNT_PATH = "firebase-service-key.json"  # Creado por el workflow
 
@@ -53,7 +56,11 @@ FINNHUB_KEY       = _require_env("FINNHUB_KEY")
 
 # Google Sheets
 SPREADSHEET_NAME = "Portafolio Financiero"
+<<<<<<< HEAD
 WORKSHEET_NAME   = "8 PRINCIPIOS"
+=======
+WORKSHEET_NAME   = "7 PRINCIPIOS"
+>>>>>>> 35f37ce87e2295637d6868becf2826bf9de5b33c
 SCORESHEET_NAME  = "SCORES"
 START_ROW = 7
 END_ROW   = 190
@@ -834,6 +841,7 @@ def score_valoracion(peg: float, forward_pe: float, fcf_yield: float, interest_c
     elif fcf_growth and fcf_growth < 0: score -= 5
     return max(0, min(100, score))
 
+<<<<<<< HEAD
 def score_soportes_pro(dist_support, dist_resistance, posicion_sr, 
                        fuerza_soporte=0, fuerza_resistencia=0, 
                        atr_threshold=0.02,
@@ -1129,6 +1137,31 @@ def score_williams_pro(wr_current, wr_daily, wr_1w, wr_2w,
     elif wr_1w > -20 and wr_current < wr_1w - 5:
         score -= 5  # Saliendo de sobrecompra = momentum bajista
     
+=======
+def score_soportes(dist_support: float, dist_resistance: float, posicion_sr: str) -> float:
+    score = 50.0
+    dist_support = safe_float(dist_support)
+    dist_resistance = safe_float(dist_resistance)
+    if dist_support and dist_support < 0.02: score += 15
+    elif dist_support and dist_support < 0.05: score += 5
+    if dist_resistance and dist_resistance < 0.02: score -= 10
+    if "Rompimiento al alza" in str(posicion_sr): score += 20
+    elif "Rompimiento bajista" in str(posicion_sr): score -= 20
+    elif "Más cerca de soporte" in str(posicion_sr): score += 5
+    elif "Más cerca de resistencia" in str(posicion_sr): score -= 5
+    return max(0, min(100, score))
+
+def score_williams(wr_current: float, wr_daily: float) -> float:
+    score = 50.0
+    wr_current = safe_float(wr_current)
+    wr_daily = safe_float(wr_daily)
+    if wr_current < -80: score += 20
+    elif wr_current < -60: score += 10
+    elif wr_current > -20: score -= 15
+    elif wr_current > -40: score -= 5
+    if wr_daily < -80: score += 5
+    elif wr_daily > -20: score -= 5
+>>>>>>> 35f37ce87e2295637d6868becf2826bf9de5b33c
     return max(0, min(100, score))
 
 def score_volumen(vol_ratio: float, obv_trend: str, price_vol_div: str, mfi_level: str) -> float:
@@ -1166,7 +1199,10 @@ ticker_range = f'A{START_ROW}:A{END_ROW}'
 
 ranges = {
     'Target Mean Price': f'B{START_ROW}:B{END_ROW}',
+<<<<<<< HEAD
     'Price Actual': f'C{START_ROW}:C{END_ROW}',
+=======
+>>>>>>> 35f37ce87e2295637d6868becf2826bf9de5b33c
     'Analyst Count': f'E{START_ROW}:E{END_ROW}',
     'Target Dispersion': f'F{START_ROW}:F{END_ROW}',
     'Earning Estimate AVG': f'G{START_ROW}:G{END_ROW}',
@@ -1241,6 +1277,7 @@ ranges = {
     'Score_Final': f'DO{START_ROW}:DO{END_ROW}',
     'Grade': f'DP{START_ROW}:DP{END_ROW}',
     'Alertas': f'DQ{START_ROW}:DQ{END_ROW}',
+<<<<<<< HEAD
     'Fibonacci Cerca': f'DS{START_ROW}:DS{END_ROW}',  
     'Fuerza Soporte': f'DT{START_ROW}:DT{END_ROW}',
     'Fuerza Resistencia': f'DU{START_ROW}:DU{END_ROW}',
@@ -1262,6 +1299,13 @@ ranges = {
 defaults = {
     'Target Mean Price': "N/A",'Price Actual': 0,'Analyst Count': 0, 'Target Dispersion': "N/A",
     'Earning Estimate AVG': "N/A", 'Rev_Growth_YoY': 0, 'Gross_Margin': 0,'Cartera': 'No',
+=======
+}
+
+defaults = {
+    'Target Mean Price': "N/A", 'Analyst Count': 0, 'Target Dispersion': "N/A",
+    'Earning Estimate AVG': "N/A", 'Rev_Growth_YoY': 0, 'Gross_Margin': 0,
+>>>>>>> 35f37ce87e2295637d6868becf2826bf9de5b33c
     'Operating_Margin': 0, 'Growth_Momentum': "N/A", 'SMA_200': "N/A",
     'SMA_Trend': "N/A", 'Volatility_ATR': 0, 'Weighted Consistency': "N/A",
     'Beat Rate': 0, 'Recent 4Q Avg': 0, 'Revenue Surprise 4Q': "N/A",
@@ -1277,6 +1321,7 @@ defaults = {
     'Sector': "N/A", 'Days Public': "N/A", 'Beta': "N/A", 'Official URL': "N/A",
     'Min 200d': 0, 'Max 200d': 0, 'Soportes': "N/A", 'Resistencias': "N/A",
     'Posición S/R': "N/A", 'Soporte Cercano': 0, 'Resistencia Cercana': 0,
+<<<<<<< HEAD
     'Fibonacci Cerca': "N/A", 'Fuerza Soporte': 0, 'Fuerza Resistencia': 0, 'ATR Threshold %': 0,
     'Dist a Soporte %': 0, 'Dist a Resistencia %': 0,
     'Williams %R (Current)': 0, 'Williams %R (1w ago)': 0, 'Williams %R (2w ago)': 0, 'Williams %R (Daily)': 0,
@@ -1290,6 +1335,10 @@ defaults = {
     'Williams Signal Strength': 0,
     'Williams Signal Quality': "BAJA",
     'Williams State': "NEUTRAL",
+=======
+    'Dist a Soporte %': 0, 'Dist a Resistencia %': 0,
+    'Williams %R (Current)': 0, 'Williams %R (1w ago)': 0, 'Williams %R (2w ago)': 0, 'Williams %R (Daily)': 0,
+>>>>>>> 35f37ce87e2295637d6868becf2826bf9de5b33c
     'Volume Ratio': 1, 'Volume Level': "N/A", 'OBV Trend': "N/A", 'Price-Volume Div': "N/A",
     'MFI': 50, 'MFI Level': "N/A",
     'Score_Precio': 50, 'Score_Crecimiento': 50, 'Score_Tendencia': 50,
@@ -1322,6 +1371,7 @@ def sanitize_for_sheets(value):
         return float(value)
     return value
 
+<<<<<<< HEAD
 def calc_levels_pro(prices, vols, dates, cluster_size, n=4, decay_days=180):
     """
     Versión mejorada con:
@@ -1654,6 +1704,29 @@ def calc_williams_signal_strength(wr_current, wr_daily, volume_ratio, obv_trend,
 
 
 
+=======
+def calc_levels(prices, vols, cluster_size, n=4):
+    if cluster_size <= 0:
+        cluster_size = max(np.mean(prices) * 0.005, 0.01) if len(prices) > 0 else 1.0
+    rounded = np.round(prices / cluster_size) * cluster_size
+    data_d = {}
+    for price_r, vol in zip(rounded, vols):
+        if price_r not in data_d:
+            data_d[price_r] = {'count': 0, 'volume': 0}
+        data_d[price_r]['count']  += 1
+        data_d[price_r]['volume'] += vol
+    if not data_d:
+        return []
+    mx_c = max(d['count']  for d in data_d.values())
+    mx_v = max(d['volume'] for d in data_d.values())
+    scores = {
+        p: (d['count'] / mx_c * 0.6 + d['volume'] / mx_v * 0.4)
+        for p, d in data_d.items()
+    }
+    top_n = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:n]
+    return sorted([round(p, 2) for p, _ in top_n])
+
+>>>>>>> 35f37ce87e2295637d6868becf2826bf9de5b33c
 # ==============================================================
 # 🧠 CACHE ÚNICO DE DATOS POR TICKER (CLAVE DE VELOCIDAD)
 # ==============================================================
@@ -1694,13 +1767,21 @@ def get_cached_ticker_data(symbol: str) -> Tuple[Any, dict, pd.DataFrame]:
 # ==============================================================
 
 def process_ticker(symbol: str) -> Tuple[str, Dict[str, Any], List[str]]:
+<<<<<<< HEAD
     results = {key: defaults[key] for key in ranges.keys()}
     # Leer valor actual de Cartera desde la hoja (ya viene en all_results al llamar) # No hacemos nada aquí, se maneja en la orquestación
+=======
+    logger.info(f"{'='*50}  {symbol}  {'='*50}")
+    results = {key: defaults[key] for key in ranges.keys()}
+>>>>>>> 35f37ce87e2295637d6868becf2826bf9de5b33c
     alerts = []
 
     ticker, info, hist = get_cached_ticker_data(symbol)
     current_price = info.get("currentPrice", 0)
+<<<<<<< HEAD
     results['Price Actual'] = current_price if current_price else 0
+=======
+>>>>>>> 35f37ce87e2295637d6868becf2826bf9de5b33c
     market_cap_yf = info.get("marketCap", 0)
 
     # Validación cruzada rápida (solo si FMP vivo)
@@ -2170,7 +2251,11 @@ def process_ticker(symbol: str) -> Tuple[str, Dict[str, Any], List[str]]:
         logger.error(f"{symbol} error P5 (Expected): {e}")
 
     # ═══════════════════════════════════════════════════════
+<<<<<<< HEAD
     # PRINCIPIO 6: SOPORTES Y RESISTENCIAS PRO
+=======
+    # PRINCIPIO 6: SOPORTES Y RESISTENCIAS - REUSA hist CACHED
+>>>>>>> 35f37ce87e2295637d6868becf2826bf9de5b33c
     # ═══════════════════════════════════════════════════════
     try:
         if hist is not None and not hist.empty and len(hist) >= 50:
@@ -2180,11 +2265,15 @@ def process_ticker(symbol: str) -> Tuple[str, Dict[str, Any], List[str]]:
             results['Min 200d'] = round(min_200d, 4)
             results['Max 200d'] = round(max_200d, 4)
 
+<<<<<<< HEAD
             # ATR para clustering y threshold
+=======
+>>>>>>> 35f37ce87e2295637d6868becf2826bf9de5b33c
             if len(hist) >= 14:
                 hist['HL'] = hist['High'] - hist['Low']
                 atr_p6 = hist['HL'].tail(14).mean()
                 cluster_size = max(atr_p6 * 0.5, cp * 0.003)
+<<<<<<< HEAD
                 atr_pct = atr_p6 / cp if cp > 0 else 0.02
             else:
                 cluster_size = cp * 0.005
@@ -2255,10 +2344,22 @@ def process_ticker(symbol: str) -> Tuple[str, Dict[str, Any], List[str]]:
                         fib_near.append(f"{name}: {level:.2f}")
 
             # Niveles cercanos al precio actual
+=======
+            else:
+                cluster_size = cp * 0.005
+
+            lows = hist['Low'].values
+            highs = hist['High'].values
+            volumes = hist['Volume'].values
+            support_levels = calc_levels(lows, volumes, cluster_size)
+            resistance_levels = calc_levels(highs, volumes, cluster_size)
+
+>>>>>>> 35f37ce87e2295637d6868becf2826bf9de5b33c
             s_below = [s for s in support_levels if s < cp]
             r_above = [r for r in resistance_levels if r > cp]
             nearest_support = max(s_below) if s_below else min_200d
             nearest_resistance = min(r_above) if r_above else max_200d
+<<<<<<< HEAD
             dist_to_support = (cp - nearest_support) / cp if nearest_support and nearest_support > 0 else 1
             dist_to_resistance = (nearest_resistance - cp) / cp if nearest_resistance and nearest_resistance > 0 else 1
 
@@ -2364,11 +2465,27 @@ def process_ticker(symbol: str) -> Tuple[str, Dict[str, Any], List[str]]:
             results['Soportes'] = ", ".join([f"{s:.2f}" for s in support_levels])
             results['Resistencias'] = ", ".join([f"{r:.2f}" for r in resistance_levels])
             results['Fibonacci Cerca'] = "; ".join(fib_near) if fib_near else "N/A"
+=======
+            dist_to_support = (cp - nearest_support) / cp if nearest_support else 1
+            dist_to_resistance = (nearest_resistance - cp) / cp if nearest_resistance else 1
+
+            if   cp > max_200d:                pos = "Rompimiento al alza"
+            elif cp < min_200d:                pos = "Rompimiento bajista"
+            elif dist_to_resistance < 0.02:    pos = "Cerca de resistencia"
+            elif dist_to_support < 0.02:     pos = "Cerca del soporte"
+            elif dist_to_support < dist_to_resistance: pos = "Más cerca de soporte"
+            elif dist_to_resistance < dist_to_support: pos = "Más cerca de resistencia"
+            else:                              pos = "En rango"
+
+            results['Soportes'] = ", ".join([f"{s:.2f}" for s in support_levels])
+            results['Resistencias'] = ", ".join([f"{r:.2f}" for r in resistance_levels])
+>>>>>>> 35f37ce87e2295637d6868becf2826bf9de5b33c
             results['Posición S/R'] = pos
             results['Soporte Cercano'] = round(nearest_support, 4)
             results['Resistencia Cercana'] = round(nearest_resistance, 4)
             results['Dist a Soporte %'] = round(dist_to_support, 6)
             results['Dist a Resistencia %'] = round(dist_to_resistance, 6)
+<<<<<<< HEAD
             results['Fuerza Soporte'] = round(support_strength, 2)
             results['Fuerza Resistencia'] = round(resistance_strength, 2)
             results['ATR Threshold %'] = round(proximity_threshold, 4)
@@ -2385,12 +2502,15 @@ def process_ticker(symbol: str) -> Tuple[str, Dict[str, Any], List[str]]:
             results['FibProximity'] = round(fib_proximity, 4)
             results['TrendAlignment'] = round(trend_alignment, 2)
             
+=======
+>>>>>>> 35f37ce87e2295637d6868becf2826bf9de5b33c
         else:
             logger.info(f"{symbol}: históricos insuficientes S/R")
     except Exception as e:
         logger.error(f"{symbol} error P6 (S/R): {e}")
 
     # ═══════════════════════════════════════════════════════
+<<<<<<< HEAD
     # PRINCIPIO 7: WILLIAMS %R PRO
     # ═══════════════════════════════════════════════════════
     try:
@@ -2543,6 +2663,49 @@ def process_ticker(symbol: str) -> Tuple[str, Dict[str, Any], List[str]]:
         results['Williams State'] = "N/A"
 
 
+=======
+    # PRINCIPIO 7: WILLIAMS %R - REUSA hist CACHED
+    # ═══════════════════════════════════════════════════════
+    try:
+        if hist is not None and not hist.empty and len(hist) >= 70:
+            cp = hist['Close'].iloc[-1]
+            hist_copy = hist.copy()
+            hist_copy['Date'] = pd.to_datetime(hist_copy.index)
+            hist_copy['Week'] = hist_copy['Date'].dt.isocalendar().week
+            hist_copy['Year'] = hist_copy['Date'].dt.isocalendar().year
+            hist_copy['YearWeek'] = hist_copy['Year'].astype(str) + '-W' + hist_copy['Week'].astype(str).str.zfill(2)
+            unique_weeks = hist_copy['YearWeek'].unique()
+
+            if len(unique_weeks) >= 14:
+                lb_data = hist_copy[hist_copy['YearWeek'].isin(unique_weeks[-14:])]
+                hh = lb_data['High'].max()
+                ll = lb_data['Low'].min()
+                wr_curr = ((hh - cp) / (hh - ll)) * -100 if hh != ll else 0
+
+                def wr_for_week(wk_idx):
+                    wk_data = hist_copy[hist_copy['YearWeek'] == unique_weeks[wk_idx]]
+                    if not wk_data.empty:
+                        p = wk_data['Close'].iloc[-1]
+                        return ((hh - p) / (hh - ll)) * -100 if hh != ll else 0
+                    return 0
+
+                wr_1w = wr_for_week(-2) if len(unique_weeks) >= 15 else 0
+                wr_2w = wr_for_week(-3) if len(unique_weeks) >= 16 else 0
+                last14d = hist_copy.tail(14)
+                hh14 = last14d['High'].max(); ll14 = last14d['Low'].min()
+                wr_daily = ((hh14 - cp) / (hh14 - ll14)) * -100 if hh14 != ll14 else 0
+
+                results['Williams %R (Current)'] = wr_curr
+                results['Williams %R (1w ago)'] = wr_1w
+                results['Williams %R (2w ago)'] = wr_2w
+                results['Williams %R (Daily)'] = wr_daily
+            else:
+                logger.info(f"{symbol}: semanas insuficientes Williams")
+        else:
+            logger.info(f"{symbol}: históricos insuficientes Williams")
+    except Exception as e:
+        logger.error(f"{symbol} error P7 (Williams): {e}")
+>>>>>>> 35f37ce87e2295637d6868becf2826bf9de5b33c
 
     # ═══════════════════════════════════════════════════════
     # PRINCIPIO 8: VOLUMEN Y MOMENTUM - REUSA hist CACHED
@@ -2666,6 +2829,7 @@ def process_ticker(symbol: str) -> Tuple[str, Dict[str, Any], List[str]]:
             results['FCF Yield'], results['Interest Coverage'],
             de_num, results['FCF Growth YoY'], sector_cfg
         )
+<<<<<<< HEAD
         scores['soportes'] = score_soportes_pro(
             results['Dist a Soporte %'], 
             results['Dist a Resistencia %'],
@@ -2702,6 +2866,15 @@ def process_ticker(symbol: str) -> Tuple[str, Dict[str, Any], List[str]]:
             results.get('TrendAlignment', 0)
         )
         
+=======
+        scores['soportes'] = score_soportes(
+            results['Dist a Soporte %'], results['Dist a Resistencia %'],
+            results['Posición S/R']
+        )
+        scores['williams'] = score_williams(
+            results['Williams %R (Current)'], results['Williams %R (Daily)']
+        )
+>>>>>>> 35f37ce87e2295637d6868becf2826bf9de5b33c
         scores['volumen'] = score_volumen(
             results['Volume Ratio'], results['OBV Trend'],
             results['Price-Volume Div'], results['MFI Level']
@@ -2819,12 +2992,15 @@ def main():
         all_results = {key: [] for key in ranges.keys()}
 
         ticker_results = {}
+<<<<<<< HEAD
         # Leer columna Cartera ANTES de procesar para preservar valores manuales
         cartera_column = worksheet.get('CT7:CT190')  # Ajusta el rango
         cartera_map = {}
         for i, val in enumerate(cartera_column):
             if val and val[0]:
                 cartera_map[i] = val[0].strip()
+=======
+>>>>>>> 35f37ce87e2295637d6868becf2826bf9de5b33c
         with ThreadPoolExecutor(max_workers=4) as executor:
             future_to_idx = {
                 executor.submit(process_ticker, sym): idx
@@ -2849,6 +3025,7 @@ def main():
                 logger.error(f"Ticker posición {idx} ({symbols[idx]}) sin resultados")
                 results = {key: defaults[key] for key in ranges.keys()}
                 results['Alertas'] = "ERROR: Sin resultados"
+<<<<<<< HEAD
             # PRESERVAR Cartera si ya existe en la hoja (no sobrescribir)
             if idx in cartera_map and cartera_map[idx] in ('Sí', 'Si', 'SI', 'YES', 'Yes', 'yes'):
                 results['Cartera'] = 'Sí'
@@ -2856,6 +3033,9 @@ def main():
                 results['Cartera'] = 'No'
             else:
                 results['Cartera'] = 'No'  # Default solo si no hay valor previo
+=======
+
+>>>>>>> 35f37ce87e2295637d6868becf2826bf9de5b33c
             for key in ranges.keys():
                 all_results[key].append([sanitize_for_sheets(results[key])])
 
@@ -2869,6 +3049,7 @@ def main():
                        "P3_Tendencia", "P4_Consistencia", "P5_Valoracion",
                        "P6_Soportes", "P7_Williams", "P8_Volumen", "Alertas"]
             score_sheet.update('A1:L1', [headers])
+<<<<<<< HEAD
 
         score_data = []
         for i, sym in enumerate(symbols):
@@ -2908,3 +3089,37 @@ def main():
 
 if __name__ == "__main__":
     main()
+=======
+
+        score_data = []
+        for i, sym in enumerate(symbols):
+            score_data.append([
+                sym,
+                sanitize_for_sheets(all_results['Score_Final'][i][0]),
+                sanitize_for_sheets(all_results['Grade'][i][0]),
+                sanitize_for_sheets(all_results['Score_Precio'][i][0]),
+                sanitize_for_sheets(all_results['Score_Crecimiento'][i][0]),
+                sanitize_for_sheets(all_results['Score_Tendencia'][i][0]),
+                sanitize_for_sheets(all_results['Score_Consistencia'][i][0]),
+                sanitize_for_sheets(all_results['Score_Valoracion'][i][0]),
+                sanitize_for_sheets(all_results['Score_Soportes'][i][0]),
+                sanitize_for_sheets(all_results['Score_Williams'][i][0]),
+                sanitize_for_sheets(all_results['Score_Volumen'][i][0]),
+                sanitize_for_sheets(all_results['Alertas'][i][0]),
+            ])
+        score_sheet.update(range_name=f'A2:L{1+len(score_data)}', values=score_data)
+        logger.info(f"✅ Pestaña '{SCORESHEET_NAME}' actualizada con {len(score_data)} tickers.")
+        logger.info("🎉 ¡Proceso completado!")
+
+    except gspread.exceptions.SpreadsheetNotFound:
+        logger.error(f'❌ Hoja "{SPREADSHEET_NAME}" no encontrada.')
+    except gspread.exceptions.WorksheetNotFound:
+        logger.error(f'❌ Pestaña "{WORKSHEET_NAME}" no encontrada.')
+    except Exception as e:
+        import traceback
+        logger.error(f"❌ Error inesperado: {e}")
+        traceback.print_exc()
+
+if __name__ == "__main__":
+    main()
+>>>>>>> 35f37ce87e2295637d6868becf2826bf9de5b33c

@@ -32,6 +32,7 @@ jobs:
       # 4. Instalar dependencias
       - name: Install dependencies
         run: |
+<<<<<<< HEAD
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install -r requirements-firebase.txt  # o solo requirements.txt si unificaste
@@ -51,6 +52,18 @@ jobs:
       
       # 6. Crear archivo .env con API keys
       - name: Setup environment variables
+=======
+          pip install --upgrade pip
+          pip install yfinance gspread google-auth requests pandas numpy finnhub-python python-dotenv
+
+      # ── 4. Escribir credencial de Google desde secret ───────────
+      #       NUNCA guardes el JSON en el repo; usá GitHub Secrets
+      - name: Write Google credentials
+        run: echo '${{ secrets.GOOGLE_JSON_KEY }}' > principios.json
+
+      # ── 5. Ejecutar el script principal ─────────────────────────
+      - name: Run portfolio update
+>>>>>>> 35f37ce87e2295637d6868becf2826bf9de5b33c
         env:
           ALPHA_VANTAGE_KEY: ${{ secrets.ALPHA_VANTAGE_KEY }}
           FMP_KEY: ${{ secrets.FMP_KEY }}
