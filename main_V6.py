@@ -56,7 +56,7 @@ SPREADSHEET_NAME = "Portafolio Financiero"
 WORKSHEET_NAME   = "8 PRINCIPIOS"
 SCORESHEET_NAME  = "SCORES"
 START_ROW = 7
-END_ROW   = 8
+END_ROW   = 190
 
 # ==============================================================
 # 🔑 AUTENTICACIÓN GOOGLE
