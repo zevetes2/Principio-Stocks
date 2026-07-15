@@ -93,7 +93,7 @@ SPREADSHEET_NAME = "Portafolio Financiero"
 WORKSHEET_NAME   = "8 PRINCIPIOS"      # Hoja principal (se mantiene nombre por compatibilidad)
 SCORESHEET_NAME  = "SCORES_v7"         # Nueva pestaña para v7
 START_ROW = 7
-END_ROW   = 27
+END_ROW   = 190
 
 # ==============================================================
 # 🔑 AUTENTICACIÓN GOOGLE

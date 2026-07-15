@@ -55,7 +55,7 @@ FINNHUB_KEY       = _require_env("FINNHUB_KEY")
 SPREADSHEET_NAME = "Portafolio Financiero"
 WORKSHEET_NAME   = "8 PRINCIPIOS"
 SCORESHEET_NAME  = "SCORES"
-START_ROW = 28
+START_ROW = 7
 END_ROW   = 190
 
 # ==============================================================
