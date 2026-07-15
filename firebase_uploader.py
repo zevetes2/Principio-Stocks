@@ -386,7 +386,7 @@ def upload_to_firestore(all_results: Dict[str, List], symbols: List[str], versio
             'lastUpdate': now_str,
         }
 
-    # 4. Convertir dicts a listas y subir a Firestore
+    # 4. Subir a Firestore
     batch = db.batch()
     
     for p_num in range(1, 9):
@@ -406,13 +406,13 @@ def upload_to_firestore(all_results: Dict[str, List], symbols: List[str], versio
     meta_ref = db.collection('portafolio').document('metadata')
     batch.set(meta_ref, {
         'lastUpdate': now_str,
-        'totalTickers': sum(len(merged_by_principio[f'P{p}']) for p in range(1, 9)) // 8,  # aprox
+        'totalTickers': sum(len(merged_by_principio[f'P{p}']) for p in range(1, 9)) // 8,
         'version': version,
-        'source': 'main.py',
+        'source': 'main_V6.py',
         'lastBatchSize': len(symbols),
         'lastBatchTickers': list(batch_symbols),
     }, merge=True)
 
     batch.commit()
-    print(f"✅ Firestore actualizado: {len(symbols)} tickers actualizados, datos preservados")
-    print(f"   Timestamp: {now_str}")
+    logger.info(f"✅ Firestore actualizado: {len(symbols)} tickers actualizados, datos preservados")
+    logger.info(f"   Timestamp: {now_str}")

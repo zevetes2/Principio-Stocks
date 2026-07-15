@@ -56,7 +56,7 @@ SPREADSHEET_NAME = "Portafolio Financiero"
 WORKSHEET_NAME   = "8 PRINCIPIOS"
 SCORESHEET_NAME  = "SCORES"
 START_ROW = 7
-END_ROW   = 190
+END_ROW   = 8
 
 # ==============================================================
 # 🔑 AUTENTICACIÓN GOOGLE
@@ -1256,7 +1256,7 @@ ranges = {
     'Williams Signal Quality': f'EE{START_ROW}:EE{END_ROW}',      # ← NUEVO
     'Williams State': f'EF{START_ROW}:EF{END_ROW}',
     'Cartera': f'CT{START_ROW}:CT{END_ROW}',  
-    'Last Update': f'FU{START_ROW}:FU{END_ROW}'  # ← NUEVA COLUMNA (ajusta la letra según tu hoja)
+    'Last Update': f'FU{START_ROW}:FU{END_ROW}'  
 
 }
 
@@ -2855,7 +2855,7 @@ def write_to_sheets(worksheet, all_results: Dict[str, List], symbols: List[str])
                 })
     
     # Añadir Last Update (columna EH o la que elijas)
-    last_update_col = 'EH'  # ← AJUSTA ESTA LETRA A TU COLUMNA DISPONIBLE
+    last_update_col = 'FU'  # ← AJUSTA ESTA LETRA A TU COLUMNA DISPONIBLE
     for row_num, row_data in updates_by_row.items():
         batch_updates.append({
             'range': f"{last_update_col}{row_num}",
