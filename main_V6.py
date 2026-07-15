@@ -2936,12 +2936,20 @@ def main():
         all_results = {key: [] for key in ranges.keys()}
 
         ticker_results = {}
+        # ─── LEER Cartera por TICKER (no por índice) para evitar desfase ───
         cartera_map = {}
         try:
-            cartera_column = worksheet.get('CT7:CT190')  # Ajusta el rango si es necesario
-            for i, val in enumerate(cartera_column):
-                if val and val[0]:
-                    cartera_map[i] = val[0].strip()
+            # Leer tickers crudos (sin filtrar) de A7:A190 para mantener alineación con CT
+            tickers_raw_for_cartera = worksheet.get(ticker_range)
+            cartera_column = worksheet.get('CT7:CT190')
+            
+            for i, item in enumerate(tickers_raw_for_cartera):
+                if item and item[0] and validate_ticker(item[0]):
+                    ticker_key = item[0].strip().upper()
+                    if i < len(cartera_column) and cartera_column[i] and cartera_column[i][0]:
+                        cartera_map[ticker_key] = cartera_column[i][0].strip()
+                    else:
+                        cartera_map[ticker_key] = 'No'
         except Exception as e:
             logger.warning(f"No se pudo leer columna Cartera: {e}")
 
@@ -2970,15 +2978,12 @@ def main():
                 results = {key: defaults[key] for key in ranges.keys()}
                 results['Alertas'] = "ERROR: Sin resultados"
             
-            # ─── PRESERVAR Cartera: solo si existe en la hoja, copiar tal cual ───
-            if idx in cartera_map:
-                # Preservar el valor EXACTO que está en la hoja (sin normalizar)
-                results['Cartera'] = cartera_map[idx]
-                #logger.debug(f"{symbols[idx]}: Cartera preservada = '{cartera_map[idx]}'")
+            # ─── PRESERVAR Cartera por ticker (evita desfase por tickers inválidos) ───
+            sym = symbols[idx]
+            if sym in cartera_map:
+                results['Cartera'] = cartera_map[sym]
             else:
-                # Solo asignar default si la celda está vacía en Sheets
                 results['Cartera'] = 'No'
-                #logger.debug(f"{symbols[idx]}: Cartera default = 'No' (celda vacía)")
             
             for key in ranges.keys():
                 all_results[key].append([sanitize_for_sheets(results[key])])
