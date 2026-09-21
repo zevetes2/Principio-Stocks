@@ -3,7 +3,7 @@ name: Update Portfolio ETH
 on:
   schedule:
     # Lunes–Viernes cada 30 min entre 13:17-21:47 UTC
-    - cron: '17,47 13-21 * * 1-5'
+    - cron: '*/20 13-21 * * 1-5'
   workflow_dispatch:
 
 jobs:
