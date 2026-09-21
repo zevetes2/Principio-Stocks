@@ -56,7 +56,7 @@ SPREADSHEET_NAME = "Portafolio Financiero"
 WORKSHEET_NAME   = "8 PRINCIPIOS"
 SCORESHEET_NAME  = "SCORES"
 START_ROW = 7
-END_ROW   = 190
+END_ROW   = 170
 
 # ==============================================================
 # 🔑 AUTENTICACIÓN GOOGLE
@@ -167,10 +167,10 @@ _session.headers.update({
     "Connection": "keep-alive",
 })
 
-AV_BASE   = "https://www.alphavantage.co/query"
-FMP_BASE  = "https://financialmodelingprep.com/api/v3"
-FMP_V4    = "https://financialmodelingprep.com/api/v4"
-FINN_BASE = "https://finnhub.io/api/v1"
+AV_BASE         = "https://www.alphavantage.co/query"
+FMP_STABLE_BASE = "https://financialmodelingprep.com/stable"
+FMP_LEGACY_BASE = "https://financialmodelingprep.com/api"
+FINN_BASE       = "https://finnhub.io/api/v1"
 
 USE_FMP = os.getenv("USE_FMP", "true").lower() in ("true", "1", "yes")
 if not USE_FMP:
@@ -222,17 +222,63 @@ def av_get(function, symbol, extra_params=None):
         return None
     return data
 
-def fmp_get(endpoint, version="v3", params=None):
+# Mapeo legacy → stable. Nombres de endpoint que existen en /stable.
+_FMP_STABLE_MAP = {
+    "company/profile":         "profile",
+    "profile":                 "profile",
+    "price-target-consensus":  "price-target-consensus",
+    "price-target":            "price-target",
+    "income-statement":        "income-statement",
+    "balance-sheet-statement": "balance-sheet-statement",
+    "cash-flow-statement":     "cash-flow-statement",
+    "ratios":                  "ratios",
+    "ratios-ttm":              "ratios-ttm",
+    "key-metrics":             "key-metrics",
+    "earnings-surprises":      "earnings-surprises",
+    "analyst-estimates":       "analyst-estimates",
+}
+
+def fmp_get(endpoint: str, version: str = "v3", params: dict = None):
+    """
+    Wrapper unificado FMP con auto-migración a la API stable.
+
+    Acepta los formatos legacy usados en todo el código:
+      fmp_get("/income-statement/AAPL", params={"limit": 2})
+      fmp_get("/company/profile/AAPL")
+      fmp_get("/price-target-consensus/AAPL")
+
+    Los traduce automáticamente a:
+      https://financialmodelingprep.com/stable/income-statement?symbol=AAPL&limit=2
+
+    Si el endpoint no está mapeado a stable, cae al legacy /api/v3|v4.
+    """
     if fmp_cb.is_permanent() or fmp_cb.is_open():
         return None
-    p = params or {}
+
+    p = dict(params or {})
     p["apikey"] = FMP_KEY
-    if version == "v3":
-        url = f"https://financialmodelingprep.com/api/v3{endpoint}"
-    else:
-        url = f"https://financialmodelingprep.com/api/v4{endpoint}"
-    data = _safe_request(url, p, cb=fmp_cb, limiter=fmp_limiter)
-    return data
+
+    path = endpoint.lstrip("/").rstrip("/")
+    parts = path.split("/")
+
+    # Probar match de 2 segmentos (company/profile) y luego 1 (income-statement)
+    for split_at in (2, 1):
+        if split_at >= len(parts):
+            continue
+        candidate = "/".join(parts[:split_at])
+        symbol    = "/".join(parts[split_at:])
+        if not symbol:
+            continue
+        if candidate in _FMP_STABLE_MAP:
+            stable_endpoint = _FMP_STABLE_MAP[candidate]
+            url = f"{FMP_STABLE_BASE}/{stable_endpoint}"
+            p["symbol"] = symbol
+            return _safe_request(url, p, cb=fmp_cb, limiter=fmp_limiter)
+
+    # Fallback: legacy
+    url = f"{FMP_LEGACY_BASE}/{version}/{path}"
+    return _safe_request(url, p, cb=fmp_cb, limiter=fmp_limiter)
+
 
 def finn_get(endpoint, params=None):
     if finn_cb.is_open():
@@ -2176,8 +2222,9 @@ def process_ticker(symbol: str) -> Tuple[str, Dict[str, Any], List[str]]:
     try:
         if hist is not None and not hist.empty and len(hist) >= 50:
             cp = hist['Close'].iloc[-1]
-            min_200d = hist['Low'].min()
-            max_200d = hist['High'].max()
+            hist_200 = hist.tail(200)
+            min_200d = hist_200['Low'].min()
+            max_200d = hist_200['High'].max()
             results['Min 200d'] = round(min_200d, 4)
             results['Max 200d'] = round(max_200d, 4)
 
@@ -2625,14 +2672,15 @@ def process_ticker(symbol: str) -> Tuple[str, Dict[str, Any], List[str]]:
     # ═══════════════════════════════════════════════════════
     try:
         dp_val = defaults['Days Public']
-        if hist is not None and not hist.empty:
+        epoch = info.get("firstTradeDateEpochUtc")
+        if epoch:
             try:
-                first_date = hist.index.min().date()
-                # hist es 2y, así que estimamos desde ahí; si no hay datos previos
-                # el valor será conservador pero evitamos una descarga de 30+ años
-                dp_val = int((datetime.date.today() - first_date).days)
-            except Exception:
-                pass
+                first_date = datetime.datetime.fromtimestamp(
+                    int(epoch), tz=datetime.timezone.utc
+                ).date()
+                dp_val = (datetime.date.today() - first_date).days
+            except Exception as e:
+                logger.warning(f"{symbol}: firstTradeDateEpochUtc inválido: {e}")
         results['Days Public'] = dp_val
     except Exception as e:
         logger.error(f"{symbol} Days Public: {e}")
@@ -2882,24 +2930,30 @@ def write_to_sheets(worksheet, all_results: Dict[str, List], symbols: List[str])
     else:
         logger.warning("No hay actualizaciones para aplicar")
 
-def test_fmp_connectivity():
+def test_fmp_connectivity() -> bool:
     if fmp_cb.is_permanent():
         return False
     try:
-        test_url = "https://financialmodelingprep.com/stable/company/profile/AAPL"
-        r = _session.get(test_url, params={"apikey": FMP_KEY}, timeout=8)
+        r = _session.get(
+            f"{FMP_STABLE_BASE}/profile",
+            params={"symbol": "AAPL", "apikey": FMP_KEY},
+            timeout=8,
+        )
         if r.status_code == 200:
-            logger.info("✅ FMP conectividad OK")
-            return True
-        elif r.status_code == 403:
-            logger.error(f"🔴 FMP 403 Forbidden - Clave inválida")
+            data = r.json()
+            if isinstance(data, list) and data:
+                logger.info("✅ FMP conectividad OK (stable API)")
+                return True
+            logger.warning("⚠️ FMP responde 200 pero payload vacío → degradado")
             return False
-        elif r.status_code == 401:
+        if r.status_code == 403:
+            logger.error("🔴 FMP 403 Forbidden - Clave inválida")
+            return False
+        if r.status_code == 401:
             logger.error("🔴 FMP 401 Unauthorized")
             return False
-        else:
-            logger.warning(f"⚠️ FMP status {r.status_code}")
-            return False
+        logger.warning(f"⚠️ FMP status {r.status_code}")
+        return False
     except Exception as e:
         logger.warning(f"⚠️ FMP conectividad falló: {e}")
         return False
