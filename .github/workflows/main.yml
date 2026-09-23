@@ -2,56 +2,70 @@ name: Update Portfolio ETH
 
 on:
   schedule:
-    # Lunes–Viernes cada 30 min entre 13:17-21:47 UTC
-    - cron: '*/20 13-21 * * 1-5'
+    # ── Workflow 1 (FAST): cada 30 min entre 13:00 y 21:30 UTC, L-V ──
+    - cron: '0,30 13-21 * * 1-5'
+    # ── Workflow 2 (DEEP): 1×/día a las 05:00 UTC (borra esta línea si solo quieres FAST)
+    - cron: '0 5 * * *'
   workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Modo de ejecución'
+        required: true
+        default: 'fast'
+        type: choice
+        options:
+          - fast
+          - deep
+
+concurrency:
+  group: portfolio-update
+  cancel-in-progress: false
 
 jobs:
-  update-and-deploy:
+  update:
     runs-on: ubuntu-latest
-    timeout-minutes: 15          # ← Seguridad: máx 15 min por ejecución
+    timeout-minutes: 15
+
+    # Detectar modo según disparo
+    env:
+      RUN_MODE: ${{ github.event.inputs.mode || (github.event.schedule == '0 5 * * *' && 'deep' || 'fast') }}
 
     steps:
-      # 1. Checkout
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. Python 3.11
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          cache: 'pip'
 
-      # 3. Cache de dependencias
-      - name: Cache pip packages
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
-
-      # 4. Instalar dependencias
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # 5. Crear principios.json (Google Sheets)
+      # Restaurar snapshots.csv de runs anteriores (para backtesting)
+      - name: Restore snapshots cache
+        uses: actions/cache@v4
+        with:
+          path: snapshots.csv
+          key: snapshots-${{ github.run_id }}
+          restore-keys: |
+            snapshots-
+
       - name: Setup Google Service Account
         env:
           GOOGLE_CREDS: ${{ secrets.GOOGLE_JSON_KEY }}
         run: |
           echo "$GOOGLE_CREDS" > principios.json
 
-      # 6. Crear firebase-service-key.json
       - name: Setup Firebase Service Account
         env:
           FIREBASE_CREDS: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
         run: |
           echo "$FIREBASE_CREDS" > firebase-service-key.json
 
-      # 7. Crear .env con API keys
       - name: Setup environment variables
         env:
           ALPHA_VANTAGE_KEY: ${{ secrets.ALPHA_VANTAGE_KEY }}
@@ -62,19 +76,26 @@ jobs:
           ALPHA_VANTAGE_KEY=$ALPHA_VANTAGE_KEY
           FMP_KEY=$FMP_KEY
           FINNHUB_KEY=$FINNHUB_KEY
+          RUN_MODE=$RUN_MODE
           EOF
 
-      # 8. Ejecutar el script principal
       - name: Run main_V6.py
         run: |
-          python main_V6.py
+          echo "▶ Modo de ejecución: $RUN_MODE"
+          python main_V6.py 2>&1 | tee execution.log
 
-      # 9. Subir logs como artefactos (siempre, aunque falle)
       - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: execution-logs
-          path: |
-            *.log
-            output/
+          name: execution-logs-${{ github.run_id }}
+          path: execution.log
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: Save snapshots cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: snapshots.csv
+          key: snapshots-${{ github.run_id }}
