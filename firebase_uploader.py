@@ -182,7 +182,8 @@ def upload_to_firestore(all_results: Dict[str, List], symbols: List[str], versio
         cartera_val = str(get_val(all_results.get('Cartera', []), i, 'No'))
         cartera_val = 'Sí' if cartera_val.lower() in ('sí', 'si', 'yes', '1', 'true') else 'No'
         
-        merged_by_principio['P1'][sym_upper] = {
+                # ── Reconstruir P1 preservando campos que solo se calculan en modo DEEP ──
+        p1_base = {
             'ticker': sym_upper, 'cartera': cartera_val,
             'priceTarget': tp_float, 'priceActual': pa_float,
             'numAnalysts': int(safe_float_val(ac, 0)),
@@ -192,7 +193,35 @@ def upload_to_firestore(all_results: Dict[str, List], symbols: List[str], versio
             'scoreFinal': safe_float_val(get_val(all_results.get('Score_Final', []), i, 50)),
             'grade': str(get_val(all_results.get('Grade', []), i, 'C')),
             'lastUpdate': now_str,
+            'sector': str(get_val(all_results.get('Sector', []), i, 'N/A')),
+            'sectorNormalized': str(get_val(all_results.get('Sector Normalized', []), i, 'No')),
+            'scoreDispersion': safe_float_val(get_val(all_results.get('Score_Dispersion', []), i, 0), 0),
+            'nombre': sym_upper,
+            'alertas': str(get_val(all_results.get('Alertas', []), i, '')),
         }
+
+        # Campos FMP: solo actualizar si vienen con valor real; si no, preservar el anterior
+        previous = existing_data_by_p.get('P1', {}).get(sym_upper, {})
+
+        piotroski_new = get_val(all_results.get('Piotroski F-Score', []), i, None)
+        p1_base['piotroski'] = piotroski_new if piotroski_new is not None else previous.get('piotroski', 'N/A')
+
+        altman_new = get_val(all_results.get('Altman Z-Score', []), i, None)
+        p1_base['altmanZ'] = altman_new if altman_new is not None else previous.get('altmanZ', 'N/A')
+
+        altman_zone_new = get_val(all_results.get('Altman Zone', []), i, None)
+        p1_base['altmanZone'] = altman_zone_new if altman_zone_new is not None else previous.get('altmanZone', 'N/A')
+
+        riskcap_new = get_val(all_results.get('Risk Cap', []), i, None)
+        if riskcap_new is not None:
+            p1_base['riskCap'] = safe_float_val(riskcap_new, 100)
+        else:
+            p1_base['riskCap'] = previous.get('riskCap', 100)
+
+        cap_reasons_new = get_val(all_results.get('Cap Reasons', []), i, None)
+        p1_base['capReasons'] = str(cap_reasons_new) if cap_reasons_new is not None else previous.get('capReasons', '')
+
+        merged_by_principio['P1'][sym_upper] = p1_base
 
         # P2
         rev = safe_float_val(get_val(all_results.get('Rev_Growth_YoY', []), i, 0))

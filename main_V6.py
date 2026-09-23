@@ -56,7 +56,7 @@ SPREADSHEET_NAME = "Portafolio Financiero"
 WORKSHEET_NAME   = "8 PRINCIPIOS"
 SCORESHEET_NAME  = "SCORES"
 START_ROW = 7
-END_ROW   = 170
+END_ROW   = 190
 
 # ==============================================================
 # 🔑 AUTENTICACIÓN GOOGLE
@@ -142,6 +142,30 @@ finn_limiter = RateLimiter(max_calls=60,  period=60, name="Finnhub")
 _av_cache: Dict[str, Any] = {}
 _av_cache_lock = threading.Lock()
 
+
+# ==============================================================
+# ⚡ CACHE DE FMP POR ENDPOINT+TICKER
+# Evita llamadas duplicadas: income-statement se llama 3x por ticker.
+# Con cache, cada endpoint se descarga UNA sola vez por ticker por ejecución.
+# ==============================================================
+_fmp_cache: Dict[str, Any] = {}
+_fmp_cache_lock = threading.Lock()
+
+def fmp_get_cached(endpoint: str, version: str = "v3", params: dict = None):
+    """Wrapper cacheado de fmp_get. Misma llamada = respuesta instantánea."""
+    # La key del cache incluye endpoint + params serializados (excepto apikey)
+    params_key = ""
+    if params:
+        params_key = "|".join(f"{k}={v}" for k, v in sorted(params.items()))
+    key = f"{version}:{endpoint}:{params_key}"
+    with _fmp_cache_lock:
+        if key in _fmp_cache:
+            return _fmp_cache[key]
+    result = fmp_get(endpoint, version, params)
+    with _fmp_cache_lock:
+        _fmp_cache[key] = result
+    return result
+
 def av_get_cached(function: str, symbol: str, extra_params=None):
     """Wrapper cacheado de av_get. Misma llamada = respuesta instantánea."""
     key = f"{function}:{symbol}"
@@ -154,7 +178,7 @@ def av_get_cached(function: str, symbol: str, extra_params=None):
     return result
 
 av_cb   = CircuitBreaker(max_failures=2, name="AlphaVantage")
-fmp_cb  = CircuitBreaker(max_failures=2, name="FMP")
+fmp_cb  = CircuitBreaker(max_failures=5, name="FMP")
 finn_cb = CircuitBreaker(max_failures=2, name="Finnhub")
 
 # ==============================================================
@@ -179,32 +203,70 @@ if not USE_FMP:
 
 def _safe_request(url: str, params: dict, timeout: int = 8, cb: CircuitBreaker = None,
                   limiter: RateLimiter = None, headers: dict = None) -> Optional[dict]:
+    """
+    Cliente HTTP con circuit breaker inteligente.
+
+    Reglas de fallo:
+      - 401/403 → key inválida → CB permanente
+      - 429     → rate limit → NO cuenta como fallo (el RateLimiter ya espera)
+      - 400/404/422 → error del cliente (endpoint mal formado) → NO cuenta
+      - 5xx     → error del servidor → SÍ cuenta
+      - Timeout → SÍ cuenta
+    """
     if cb and cb.is_open():
         return None
     if limiter:
         limiter.wait_if_needed()
+
     try:
         r = _session.get(url, params=params, timeout=timeout)
         status = r.status_code
-        if status == 403:
+
+        # ── 401/403: key inválida → CB permanente ──
+        if status in (401, 403):
             if cb:
-                cb.record_failure(403)
-            logger.error(f"🔴 {cb.name if cb else 'API'} 403 Forbidden")
+                cb.record_failure(403)  # tratamos ambos como permanente
+            logger.error(f"🔴 {cb.name if cb else 'API'} {status}")
             return None
+
+        # ── 429: rate limit → no cuenta como fallo ──
         if status == 429:
             if cb:
                 cb.record_failure(429)
             return None
-        r.raise_for_status()
+
+        # ── 4xx (400, 404, 422...): error del cliente → NO cuenta ──
+        # El CB mide salud del servidor, no errores de request.
+        if 400 <= status < 500:
+            logger.debug(f"⚠️  {cb.name if cb else 'API'} {status} (client error, ignorado): {url}")
+            return None
+
+        # ── 5xx: error del servidor → SÍ cuenta ──
+        if status >= 500:
+            if cb:
+                cb.record_failure(status)
+            logger.warning(f"⚠️  {cb.name if cb else 'API'} {status} (server error)")
+            return None
+
+        # ── 2xx: éxito ──
         data = r.json()
         if cb:
             cb.record_success()
         return data
+
+    except requests.exceptions.Timeout:
+        if cb:
+            cb.record_failure(0)
+        logger.debug(f"⏱️  Timeout: {url}")
+        return None
+
     except requests.exceptions.HTTPError as e:
         status = e.response.status_code if e.response else 0
-        if cb:
+        # Solo contamos 5xx y 401/403
+        if cb and (status >= 500 or status in (401, 403)):
             cb.record_failure(status)
         return None
+
     except Exception as e:
         if cb:
             cb.record_failure(0)
@@ -234,7 +296,6 @@ _FMP_STABLE_MAP = {
     "ratios":                  "ratios",
     "ratios-ttm":              "ratios-ttm",
     "key-metrics":             "key-metrics",
-    "earnings-surprises":      "earnings-surprises",
     "analyst-estimates":       "analyst-estimates",
 }
 
@@ -291,23 +352,48 @@ def finn_get(endpoint, params=None):
 # 📦 CACHE DE SESIÓN
 # ==============================================================
 _fmp_profile_cache: Dict[str, Optional[dict]] = {}
-_fmp_profile_lock = threading.Lock()
+_fmp_profile_lock  = threading.Lock()
+_fmp_profile_locks: Dict[str, threading.Lock] = {}
+_fmp_profile_locks_guard = threading.Lock()
+
 _ticker_data_cache: Dict[str, Tuple] = {}
-_ticker_data_lock = threading.Lock()
+_ticker_data_lock  = threading.Lock()
+_ticker_data_locks: Dict[str, threading.Lock] = {}
+_ticker_locks_guard = threading.Lock()
+
+
+def _get_per_symbol_lock(registry: dict, guard: threading.Lock, key: str) -> threading.Lock:
+    """Obtiene (o crea) un lock por símbolo, evitando doble descarga bajo concurrencia."""
+    with guard:
+        if key not in registry:
+            registry[key] = threading.Lock()
+        return registry[key]
 
 def fmp_profile(symbol: str) -> Optional[dict]:
+    # Fast path sin lock
     with _fmp_profile_lock:
         if symbol in _fmp_profile_cache:
             return _fmp_profile_cache[symbol]
-    if fmp_cb.is_permanent():
-        return None
-    data = fmp_get(f"/company/profile/{symbol}")
-    if data is None:
-        data = fmp_get(f"/profile/{symbol}")
-    result = data[0] if data and isinstance(data, list) and data else None
-    with _fmp_profile_lock:
-        _fmp_profile_cache[symbol] = result
-    return result
+
+    sym_lock = _get_per_symbol_lock(_fmp_profile_locks, _fmp_profile_locks_guard, symbol)
+    with sym_lock:
+        # Double-check
+        with _fmp_profile_lock:
+            if symbol in _fmp_profile_cache:
+                return _fmp_profile_cache[symbol]
+
+        if fmp_cb.is_permanent():
+            return None
+        data = fmp_get(f"/company/profile/{symbol}")
+        if data is None:
+            data = fmp_get(f"/profile/{symbol}")
+        result = data[0] if data and isinstance(data, list) and data else None
+
+        with _fmp_profile_lock:
+            _fmp_profile_cache[symbol] = result
+        return result
+
+
 
 # ==============================================================
 # 🔧 NORMALIZACIÓN DE TICKERS
@@ -381,7 +467,7 @@ def get_target_price(info, ticker_yf, symbol):
 
 def get_analyst_count(info, symbol):
     val = info.get("numberOfAnalystOpinions")
-    if val:
+    if val is not None:
         return val
     try:
         data = finn_get("/stock/recommendation", {"symbol": symbol})
@@ -398,7 +484,7 @@ def get_rev_growth(info, symbol):
     if val:
         return val
     try:
-        data = fmp_get(f"/income-statement/{fmp_ticker(symbol)}", params={"limit": 2})
+        data = fmp_get_cached(f"/income-statement/{fmp_ticker(symbol)}", params={"limit": 2})
         if data and isinstance(data, list) and len(data) >= 2:
             r1, r2 = data[0].get("revenue",0), data[1].get("revenue",0)
             if r2 and r2 != 0:
@@ -413,7 +499,7 @@ def get_margins(info, symbol):
     if gross and oper:
         return gross, oper
     try:
-        data = fmp_get(f"/ratios/{fmp_ticker(symbol)}", params={"limit": 1})
+        data = fmp_get_cached(f"/ratios/{fmp_ticker(symbol)}", params={"limit": 1})
         if data and isinstance(data, list) and data:
             gross = gross or data[0].get("grossProfitMargin")
             oper  = oper  or data[0].get("operatingProfitMargin")
@@ -435,7 +521,7 @@ def get_margins(info, symbol):
 
 def get_forward_pe(info, symbol):
     def _fmp():
-        data = fmp_get(f"/ratios/{fmp_ticker(symbol)}", params={"limit": 1})
+        data = fmp_get_cached(f"/ratios/{fmp_ticker(symbol)}", params={"limit": 1})
         if data and isinstance(data, list) and data:
             return data[0].get("priceEarningsRatio")
         return None
@@ -449,7 +535,7 @@ def get_forward_pe(info, symbol):
 def get_peg(info, symbol):
     peg = info.get("pegRatio") or info.get("trailingPegRatio")
     def _fmp():
-        data = fmp_get(f"/ratios/{fmp_ticker(symbol)}", params={"limit": 1})
+        data = fmp_get_cached(f"/ratios/{fmp_ticker(symbol)}", params={"limit": 1})
         if data and isinstance(data, list) and data:
             return data[0].get("priceEarningsToGrowthRatio")
         return None
@@ -476,7 +562,7 @@ def get_fcf(info, ticker_yf, symbol):
     except Exception:
         pass
     try:
-        data = fmp_get(f"/cash-flow-statement/{fmp_ticker(symbol)}", params={"limit": 1})
+        data = fmp_get_cached(f"/cash-flow-statement/{fmp_ticker(symbol)}", params={"limit": 1})
         if data and isinstance(data, list) and data:
             return data[0].get("freeCashFlow")
     except Exception:
@@ -494,7 +580,7 @@ def get_fcf(info, ticker_yf, symbol):
 
 def get_total_debt(info, symbol):
     def _fmp():
-        data = fmp_get(f"/balance-sheet-statement/{fmp_ticker(symbol)}", params={"limit": 1})
+        data = fmp_get_cached(f"/balance-sheet-statement/{fmp_ticker(symbol)}", params={"limit": 1})
         if data and isinstance(data, list) and data:
             return data[0].get("totalDebt")
         return None
@@ -510,7 +596,7 @@ def get_total_debt(info, symbol):
 
 def get_ebitda(info, symbol):
     def _fmp():
-        data = fmp_get(f"/income-statement/{fmp_ticker(symbol)}", params={"limit": 1})
+        data = fmp_get_cached(f"/income-statement/{fmp_ticker(symbol)}", params={"limit": 1})
         if data and isinstance(data, list) and data:
             return data[0].get("ebitda")
         return None
@@ -530,7 +616,7 @@ def get_net_income(info, ticker_yf, symbol):
     except Exception:
         pass
     try:
-        data = fmp_get(f"/income-statement/{fmp_ticker(symbol)}", params={"limit": 1})
+        data = fmp_get_cached(f"/income-statement/{fmp_ticker(symbol)}", params={"limit": 1})
         if data and isinstance(data, list) and data:
             return data[0].get("netIncome")
     except Exception:
@@ -545,7 +631,7 @@ def get_net_income(info, ticker_yf, symbol):
 
 def get_profit_margin(info, symbol):
     def _fmp():
-        data = fmp_get(f"/ratios/{fmp_ticker(symbol)}", params={"limit": 1})
+        data = fmp_get_cached(f"/ratios/{fmp_ticker(symbol)}", params={"limit": 1})
         if data and isinstance(data, list) and data:
             return data[0].get("netProfitMargin")
         return None
@@ -577,6 +663,234 @@ def get_sector(info, symbol):
             return data.get("finnhubIndustry")
         return None
     return fetch_with_fallbacks("Sector", info.get("sector"), ("FMP", _fmp), ("Finnhub", _finn)) or "N/A"
+
+def get_piotroski_f_score(info: dict, ticker_yf, symbol: str) -> Optional[int]:
+    """
+    Piotroski F-Score (0-9). 9 criterios contables:
+      1. ROA > 0
+      2. CFO > 0
+      3. ΔROA > 0 (ROA_t > ROA_{t-1})
+      4. CFO > Net Income (accruals)
+      5. ΔLeverage < 0 (LTD/Assets bajó)
+      6. ΔCurrent Ratio > 0
+      7. No emitió acciones
+      8. ΔGross Margin > 0
+      9. ΔAsset Turnover > 0
+
+    Fuente 1: FMP /financial-scores (endpoint dedicado)
+    Fuente 2: cálculo manual con yfinance (fallback)
+    """
+    # ── Intento 1: FMP ──
+    if not fmp_cb.is_permanent():
+        try:
+            data = fmp_get_cached(f"/financial-scores/{fmp_ticker(symbol)}")
+            if isinstance(data, list) and data:
+                score = data[0].get("piotroskiScore")
+                if score is not None:
+                    return int(score)
+            elif isinstance(data, dict):
+                score = data.get("piotroskiScore")
+                if score is not None:
+                    return int(score)
+        except Exception:
+            pass
+
+    # ── Intento 2: manual ──
+    if ticker_yf is None:
+        return None
+
+    try:
+        inc = ticker_yf.financials           # anual, 4 columnas (t, t-1, t-2, t-3)
+        bs  = ticker_yf.balance_sheet
+        cf  = ticker_yf.cashflow
+        if inc is None or bs is None or cf is None:
+            return None
+        if inc.shape[1] < 2 or bs.shape[1] < 2 or cf.shape[1] < 2:
+            return None
+
+        def _row(df, *labels):
+            for lab in labels:
+                if lab in df.index:
+                    s = df.loc[lab]
+                    if len(s) >= 2:
+                        return s.iloc[0], s.iloc[1]
+            return None, None
+
+        # ── Datos ──
+        ni_t, ni_p         = _row(inc, 'Net Income', 'Net Income Common Stockholders')
+        rev_t, rev_p       = _row(inc, 'Total Revenue')
+        gp_t, gp_p         = _row(inc, 'Gross Profit')
+        ebit_t, _          = _row(inc, 'EBIT', 'Operating Income')
+        ta_t, ta_p         = _row(bs, 'Total Assets')
+        ltd_t, ltd_p       = _row(bs, 'Long Term Debt', 'Long Term Debt And Capital Lease Obligation')
+        ca_t, ca_p         = _row(bs, 'Current Assets', 'Total Current Assets')
+        cl_t, cl_p         = _row(bs, 'Current Liabilities', 'Total Current Liabilities')
+        sh_t, sh_p         = _row(bs, 'Ordinary Shares Number', 'Share Issued')
+        cfo_t, _           = _row(cf, 'Operating Cash Flow', 'Total Cash From Operating Activities')
+
+        score = 0
+
+        # 1. ROA > 0
+        if ta_t and ta_t > 0 and ni_t is not None:
+            if ni_t / ta_t > 0:
+                score += 1
+
+        # 2. CFO > 0
+        if cfo_t is not None and cfo_t > 0:
+            score += 1
+
+        # 3. ΔROA > 0
+        if ta_t and ta_p and ta_t > 0 and ta_p > 0 and ni_t is not None and ni_p is not None:
+            if (ni_t / ta_t) > (ni_p / ta_p):
+                score += 1
+
+        # 4. CFO > Net Income
+        if cfo_t is not None and ni_t is not None and cfo_t > ni_t:
+            score += 1
+
+        # 5. ΔLeverage < 0 (LTD / Total Assets bajó)
+        if all(v is not None and v != 0 for v in (ltd_t, ltd_p, ta_t, ta_p)):
+            if (ltd_t / ta_t) < (ltd_p / ta_p):
+                score += 1
+
+        # 6. ΔCurrent Ratio > 0
+        if all(v is not None and v != 0 for v in (ca_t, cl_t, ca_p, cl_p)):
+            cr_t = ca_t / cl_t
+            cr_p = ca_p / cl_p
+            if cr_t > cr_p:
+                score += 1
+
+        # 7. No emitió acciones
+        if sh_t is not None and sh_p is not None and sh_t <= sh_p:
+            score += 1
+
+        # 8. ΔGross Margin > 0
+        if all(v is not None and v != 0 for v in (gp_t, rev_t, gp_p, rev_p)):
+            if (gp_t / rev_t) > (gp_p / rev_p):
+                score += 1
+
+        # 9. ΔAsset Turnover > 0
+        if all(v is not None and v != 0 for v in (rev_t, ta_t, rev_p, ta_p)):
+            if (rev_t / ta_t) > (rev_p / ta_p):
+                score += 1
+
+        return score
+
+    except Exception as e:
+        logger.debug(f"{symbol}: Piotroski manual falló: {e}")
+        return None
+
+
+def get_altman_z_score(info: dict, ticker_yf, symbol: str,
+                       market_cap: Optional[float] = None,
+                       sector: str = "") -> Tuple[Optional[float], str]:
+    """
+    Altman Z-Score. Detecta riesgo de bancarrota a 2 años.
+
+    Modelo original (manufactura):
+      Z = 1.2*X1 + 1.4*X2 + 3.3*X3 + 0.6*X4 + 1.0*X5
+
+    Modelo Z'' (servicios/tech/no-manufactura):
+      Z'' = 6.56*X1 + 3.26*X2 + 6.72*X3 + 1.05*X4
+
+    Donde:
+      X1 = Working Capital / Total Assets
+      X2 = Retained Earnings / Total Assets
+      X3 = EBIT / Total Assets
+      X4 = Market Cap / Total Liabilities
+      X5 = Revenue / Total Assets
+
+    Zonas (modelo original):
+      Z > 2.99 → SAFE
+      1.81 ≤ Z ≤ 2.99 → GREY
+      Z < 1.81 → DISTRESS
+
+    Zonas (Z''):
+      Z > 2.6 → SAFE
+      1.1 ≤ Z ≤ 2.6 → GREY
+      Z < 1.1 → DISTRESS
+
+    Retorna: (z_score, zone)
+    """
+    # Sectores que usan Z'' (no-manufactura)
+    z_double_prime_sectors = {
+        "Technology", "Communication Services", "Healthcare",
+        "Financial Services", "Real Estate", "Utilities",
+    }
+    use_zpp = any(s.lower() in sector.lower() for s in z_double_prime_sectors)
+
+    try:
+        # ── Intento 1: FMP (ya lo calcula) ──
+        if not fmp_cb.is_permanent():
+            try:
+                data = fmp_get_cached(f"/financial-scores/{fmp_ticker(symbol)}")
+                if isinstance(data, list) and data:
+                    z = data[0].get("altmanZScore")
+                    if z is not None:
+                        zone = _classify_altman(float(z), use_zpp)
+                        return float(z), zone
+            except Exception:
+                pass
+
+        # ── Intento 2: manual ──
+        if ticker_yf is None:
+            return None, "N/A"
+
+        bs = ticker_yf.balance_sheet
+        inc = ticker_yf.financials
+        if bs is None or inc is None or bs.shape[1] < 1 or inc.shape[1] < 1:
+            return None, "N/A"
+
+        def _get(df, *labels):
+            for lab in labels:
+                if lab in df.index:
+                    v = df.loc[lab].iloc[0]
+                    if v is not None and not pd.isna(v):
+                        return float(v)
+            return None
+
+        ta = _get(bs, 'Total Assets')
+        if not ta or ta <= 0:
+            return None, "N/A"
+
+        ca  = _get(bs, 'Current Assets', 'Total Current Assets') or 0
+        cl  = _get(bs, 'Current Liabilities', 'Total Current Liabilities') or 0
+        re  = _get(bs, 'Retained Earnings') or 0
+        tl  = _get(bs, 'Total Liabilities Net Minority Interest', 'Total Liabilities') or 0
+        ebit = _get(inc, 'EBIT', 'Operating Income') or 0
+        rev  = _get(inc, 'Total Revenue') or 0
+
+        if not market_cap:
+            market_cap = info.get("marketCap", 0) or 0
+
+        X1 = (ca - cl) / ta
+        X2 = re / ta
+        X3 = ebit / ta
+        X4 = market_cap / tl if tl > 0 else 0
+        X5 = rev / ta
+
+        if use_zpp:
+            z = 6.56 * X1 + 3.26 * X2 + 6.72 * X3 + 1.05 * X4
+        else:
+            z = 1.2 * X1 + 1.4 * X2 + 3.3 * X3 + 0.6 * X4 + 1.0 * X5
+
+        return round(z, 2), _classify_altman(z, use_zpp)
+
+    except Exception as e:
+        logger.debug(f"{symbol}: Altman falló: {e}")
+        return None, "N/A"
+
+
+def _classify_altman(z: float, use_zpp: bool) -> str:
+    if use_zpp:
+        if z > 2.6:   return "SAFE"
+        if z >= 1.1:  return "GREY"
+        return "DISTRESS"
+    else:
+        if z > 2.99:  return "SAFE"
+        if z >= 1.81: return "GREY"
+        return "DISTRESS"
+
 
 def get_website(info, symbol):
     def _fmp():
@@ -642,7 +956,7 @@ def get_revenue_estimate(ticker_yf, symbol):
     except Exception:
         pass
     try:
-        data = fmp_get(f"/analyst-estimates/{fmp_ticker(symbol)}", params={"limit": 2})
+        data = fmp_get(f"/analyst-estimates/{fmp_ticker(symbol)}", params={"limit": 2, "period": "annual"})
         if data and isinstance(data, list) and len(data) >= 2:
             return data[1].get("estimatedRevenueAvg")
     except Exception:
@@ -674,7 +988,7 @@ def get_eps_estimate(ticker_yf, symbol):
 
 def get_total_cash(info, symbol):
     def _fmp():
-        data = fmp_get(f"/balance-sheet-statement/{fmp_ticker(symbol)}", params={"limit": 1})
+        data = fmp_get_cached(f"/balance-sheet-statement/{fmp_ticker(symbol)}", params={"limit": 1})
         if data and isinstance(data, list) and data:
             return data[0].get("cashAndCashEquivalents")
         return None
@@ -1190,20 +1504,208 @@ def score_volumen(vol_ratio: float, obv_trend: str, price_vol_div: str, mfi_leve
     elif str(mfi_level) == "SOBRECOMPRADO": score -= 5
     return max(0, min(100, score))
 
-def compute_final_score(scores: Dict[str, float], weights: Dict[str, float]) -> Tuple[float, str]:
+
+# ══════════════════════════════════════════════════════════════
+# 🔬 NORMALIZACIÓN POR SECTOR (Sprint 2)
+# Un score de 70 en Tech ≠ 70 en Utilities. Convertimos a z-score
+# intra-sector y luego a escala 0-100 comparable.
+# ══════════════════════════════════════════════════════════════
+
+_PRINCIPLE_SCORE_KEYS = [
+    'Score_Precio', 'Score_Crecimiento', 'Score_Tendencia',
+    'Score_Consistencia', 'Score_Valoracion', 'Score_Soportes',
+    'Score_Williams', 'Score_Volumen',
+]
+
+# Mapping score_key → weight_key en sector_cfg['weights']
+_SCORE_TO_WEIGHT_KEY = {
+    'Score_Precio':       'precio_objetivo',
+    'Score_Crecimiento':  'crecimiento',
+    'Score_Tendencia':    'tendencia',
+    'Score_Consistencia': 'consistencia',
+    'Score_Valoracion':   'valoracion',
+    'Score_Soportes':     'soportes',
+    'Score_Williams':     'williams',
+    'Score_Volumen':      'volumen',
+}
+
+
+
+def normalize_scores_by_sector(
+    ticker_results: Dict[int, Tuple[str, dict, list]],
+    min_peers: int = 3,              # ← CAMBIO: antes 5, ahora 3
+    blend_weight: float = 0.5,       # ← NUEVO: peso del raw en el blend
+) -> Dict[str, int]:
+    """
+    Normaliza los Score_* de cada ticker contra sus pares de sector.
+
+    Para cada sector con >= min_peers tickers:
+      - Calcula mean y std de cada Score_* intra-sector
+      - Convierte a z-score: z = (x - mean) / std
+      - Mapea a 0-100: norm_z = 50 + 20*z  (z=±2.5 → 0/100)
+      - BLEND: final = blend_weight*raw + (1-blend_weight)*norm_z
+      - Sobrescribe el Score_* en results
+
+    El blend evita que la normalización sea demasiado agresiva cuando
+    los tickers del sector están muy correlacionados (típico en Tech).
+
+    Sectores con < min_peers tickers NO se normalizan (raw scores).
+
+    Devuelve: dict[sector] = n_tickers_normalizados
+    """
+    sector_to_indices: Dict[str, List[int]] = defaultdict(list)
+    for idx, (_, res, _) in ticker_results.items():
+        sector = str(res.get('Sector', 'N/A')).strip() or 'N/A'
+        sector_to_indices[sector].append(idx)
+
+    stats: Dict[str, int] = {}
+
+    for sector, indices in sector_to_indices.items():
+        if len(indices) < min_peers:
+            stats[sector] = 0
+            continue
+
+        for score_key in _PRINCIPLE_SCORE_KEYS:
+            values = np.array([
+                safe_float(ticker_results[i][1].get(score_key, 50))
+                for i in indices
+            ], dtype=float)
+
+            mean = float(values.mean())
+            std  = float(values.std())
+
+            if std < 1e-6:
+                # Sin varianza → todos iguales, no normalizamos
+                continue
+
+            # z-score intra-sector
+            z = (values - mean) / std
+
+            # Normalización pura (z → 0-100)
+            normalized_raw = 50.0 + 20.0 * z
+
+            # ── BLEND 50/50: mezcla raw + normalizado ──
+            blended = blend_weight * values + (1.0 - blend_weight) * normalized_raw
+            normalized = np.clip(blended, 0.0, 100.0)
+
+            for k, idx in enumerate(indices):
+                ticker_results[idx][1][score_key] = round(float(normalized[k]), 2)
+
+        stats[sector] = len(indices)
+
+    return stats
+
+
+
+def compute_final_score(
+    scores: Dict[str, float],
+    weights: Dict[str, float],
+    risk_cap: float = 100.0,
+    dispersion_penalty_factor: float = 0.15,
+    dispersion_penalty_max: float = 15.0,
+) -> Tuple[float, str, float]:
+    """
+    Combina los 8 scores ponderados con:
+      1. Media ponderada por sector
+      2. Penalización por dispersión (consistencia)
+      3. Cap por riesgo catastrófico
+
+    Retorna: (final_score, grade, dispersion_penalty)
+    """
     total_weight = sum(weights.values())
     if total_weight == 0:
-        return 50.0, "C"
+        return 50.0, "C", 0.0
+
     weighted = sum(scores.get(k, 50) * weights.get(k, 0) for k in weights) / total_weight
-    if weighted >= 90: grade = "A+"
-    elif weighted >= 80: grade = "A"
-    elif weighted >= 70: grade = "B+"
-    elif weighted >= 60: grade = "B"
-    elif weighted >= 50: grade = "C+"
-    elif weighted >= 40: grade = "C"
-    elif weighted >= 30: grade = "D"
-    else: grade = "F"
-    return round(weighted, 2), grade
+
+    # ── Penalización por dispersión ──
+    # Un ticker con scores [100, 0, 100, 0...] es MÁS INCIERTO que uno
+    # con [50, 50, 50, 50...], aunque ambos tengan media 50.
+    principle_values = [scores.get(k, 50) for k in weights]
+    dispersion = float(np.std(principle_values)) if len(principle_values) > 1 else 0.0
+    penalty = min(dispersion * dispersion_penalty_factor, dispersion_penalty_max)
+
+    score_after_dispersion = weighted - penalty
+
+    # ── Cap por riesgo catastrófico ──
+    final_score = min(score_after_dispersion, risk_cap)
+    final_score = max(0.0, final_score)
+
+    # ── Grade ──
+    if   final_score >= 90: grade = "A+"
+    elif final_score >= 80: grade = "A"
+    elif final_score >= 70: grade = "B+"
+    elif final_score >= 60: grade = "B"
+    elif final_score >= 50: grade = "C+"
+    elif final_score >= 40: grade = "C"
+    elif final_score >= 30: grade = "D"
+    else:                   grade = "F"
+
+    return round(final_score, 2), grade, round(penalty, 2)
+
+
+# ══════════════════════════════════════════════════════════════
+# 🚨 VETO POR RIESGO CATASTRÓFICO (Sprint 2)
+# Ciertas combinaciones de métricas deben CAPEAR el score final,
+# no solo restar puntos. Una empresa con Debt/EBITDA = 12 quiebra
+# en recesión, sin importar lo bonito del chart.
+# ══════════════════════════════════════════════════════════════
+
+def apply_risk_caps(results: dict, sector_cfg: dict) -> Tuple[float, List[str]]:
+    """
+    Devuelve (cap, razones). El cap es el techo máximo del score final.
+    Si no hay riesgo, cap = 100.
+
+    Reglas (todas aditivas — se toma el cap MÁS restrictivo):
+      - Debt/EBITDA > 8  → cap 35
+      - Interest Coverage < 1.5 → cap 30
+      - FCF Yield < -5% → cap 40
+      - Altman Z < 1.81 (distress) → cap 40
+      - Equity negativo → cap 30
+      - Piotroski ≤ 2 → cap 45
+    """
+    cap = 100.0
+    reasons: List[str] = []
+
+    # ── 1. Debt/EBITDA ──
+    de_str = results.get('Debt/EBITDA', 'N/A')
+    de = safe_float(de_str, 999)
+    if de != 999 and de > 8:
+        cap = min(cap, 35.0)
+        reasons.append(f"DEUDA_EXTREMA(DE={de:.1f})")
+
+    # ── 2. Interest Coverage ──
+    ic = safe_float(results.get('Interest Coverage', 999), 999)
+    if ic != 999 and ic < 1.5:
+        cap = min(cap, 30.0)
+        reasons.append(f"COBERTURA_INSUFICIENTE(IC={ic:.2f})")
+
+    # ── 3. FCF Yield ──
+    fcf_y = safe_float(results.get('FCF Yield', 0), 0)
+    if fcf_y < -0.05:
+        cap = min(cap, 40.0)
+        reasons.append(f"FCF_NEGATIVO({fcf_y:.2%})")
+
+    # ── 4. Altman Z ──
+    az = safe_float(results.get('Altman Z-Score', 999), 999)
+    if az != 999 and az < 1.81:
+        cap = min(cap, 40.0)
+        reasons.append(f"DISTRESS_ALTMAN(Z={az:.2f})")
+
+    # ── 5. Equity negativo ──
+    eq = safe_float(results.get('_total_equity', 0), 0)
+    if eq < 0:
+        cap = min(cap, 30.0)
+        reasons.append("EQUITY_NEGATIVO")
+
+    # ── 6. Piotroski ──
+    f_score = safe_float(results.get('Piotroski F-Score', -1), -1)
+    if 0 <= f_score <= 2:
+        cap = min(cap, 45.0)
+        reasons.append(f"PIOTROSKI_BAJO(F={int(f_score)})")
+
+    return cap, reasons
+
 
 # ==============================================================
 # 📊 RANGOS EN GOOGLE SHEETS
@@ -1302,7 +1804,14 @@ ranges = {
     'Williams Signal Quality': f'EE{START_ROW}:EE{END_ROW}',      # ← NUEVO
     'Williams State': f'EF{START_ROW}:EF{END_ROW}',
     'Cartera': f'CT{START_ROW}:CT{END_ROW}',  
-    'Last Update': f'FU{START_ROW}:FU{END_ROW}'  
+    'Last Update': f'FU{START_ROW}:FU{END_ROW}',
+    'Piotroski F-Score': f'FW{START_ROW}:FW{END_ROW}',
+    'Altman Z-Score':    f'FX{START_ROW}:FX{END_ROW}',
+    'Altman Zone':       f'FY{START_ROW}:FY{END_ROW}',
+    'Sector Normalized': f'FZ{START_ROW}:FZ{END_ROW}',
+    'Risk Cap':          f'GA{START_ROW}:GA{END_ROW}',
+    'Cap Reasons':       f'GB{START_ROW}:GB{END_ROW}',
+    'Score_Dispersion':  f'GC{START_ROW}:GC{END_ROW}',
 
 }
 
@@ -1341,7 +1850,14 @@ defaults = {
     'MFI': 50, 'MFI Level': "N/A",
     'Score_Precio': 50, 'Score_Crecimiento': 50, 'Score_Tendencia': 50,
     'Score_Consistencia': 50, 'Score_Valoracion': 50, 'Score_Soportes': 50,
-    'Score_Williams': 50, 'Score_Volumen': 50, 'Score_Final': 50, 'Grade': "C", 'Alertas': "",'Last Update': ""
+    'Score_Williams': 50, 'Score_Volumen': 50, 'Score_Final': 50, 'Grade': "C", 'Alertas': "",'Last Update': "",
+    'Piotroski F-Score': "N/A",
+    'Altman Z-Score':    "N/A",
+    'Altman Zone':       "N/A",
+    'Sector Normalized': "No",
+    'Risk Cap':          100,
+    'Cap Reasons':       "",
+    'Score_Dispersion':  0,
 }
 
 # ==============================================================
@@ -1705,36 +2221,62 @@ def calc_williams_signal_strength(wr_current, wr_daily, volume_ratio, obv_trend,
 # 🧠 CACHE ÚNICO DE DATOS POR TICKER (CLAVE DE VELOCIDAD)
 # ==============================================================
 
+# Executor global reutilizable para ticker.info con timeout
+_YF_INFO_EXECUTOR = ThreadPoolExecutor(max_workers=16, thread_name_prefix="yf_info")
+
+
+def _safe_ticker_info(ticker, timeout: int = 15) -> dict:
+    """
+    Obtiene ticker.info con timeout duro usando un executor global.
+    Evita que un ticker.info colgado (30s+) bloquee el worker del pool principal.
+    """
+    if ticker is None:
+        return {}
+    try:
+        fut = _YF_INFO_EXECUTOR.submit(lambda: ticker.info or {})
+        return fut.result(timeout=timeout)
+    except FuturesTimeoutError:
+        logger.warning("ticker.info timeout (15s) — continuando sin info")
+        return {}
+    except Exception as e:
+        logger.warning(f"ticker.info error: {e}")
+        return {}
+
+
+
+
 def get_cached_ticker_data(symbol: str) -> Tuple[Any, dict, pd.DataFrame]:
-    """Descarga UN SOLO history() por ticker y lo cachea."""
+    """Descarga UN SOLO history() por ticker y lo cachea con lock por símbolo."""
+    # Fast path
     with _ticker_data_lock:
         if symbol in _ticker_data_cache:
             return _ticker_data_cache[symbol]
 
-    norm_sym = normalize_ticker(symbol)
-    try:
-        # yfinance >= 0.2.x usa curl_cffi internamente; NO admite
-        # requests.Session. Para limitar el tiempo de ticker.info (que
-        # podía bloquear 30s) usamos un future con timeout de 15s.
-        ticker = yf.Ticker(norm_sym)
-        with ThreadPoolExecutor(max_workers=1) as _info_ex:
-            _fut = _info_ex.submit(lambda: ticker.info or {})
-            try:
-                info = _fut.result(timeout=15)
-            except FuturesTimeoutError:
-                logger.warning(f"{symbol}: ticker.info timeout (15s), continuando sin datos de info")
-                info = {}
-        hist = ticker.history(period="2y", interval="1d", auto_adjust=True, timeout=10)
-    except Exception as e:
-        logger.error(f"{symbol}: yfinance crítico: {e}")
-        ticker = None
-        info = {}
-        hist = pd.DataFrame()
+    sym_lock = _get_per_symbol_lock(_ticker_data_locks, _ticker_locks_guard, symbol)
+    with sym_lock:
+        # Double-check
+        with _ticker_data_lock:
+            if symbol in _ticker_data_cache:
+                return _ticker_data_cache[symbol]
 
-    result = (ticker, info, hist)
-    with _ticker_data_lock:
-        _ticker_data_cache[symbol] = result
-    return result
+        norm_sym = normalize_ticker(symbol)
+        try:
+            ticker = yf.Ticker(norm_sym)
+            info   = _safe_ticker_info(ticker, timeout=15)
+            hist   = ticker.history(
+                period="2y", interval="1d",
+                auto_adjust=True, timeout=10,
+            )
+        except Exception as e:
+            logger.error(f"{symbol}: yfinance crítico: {e}")
+            ticker, info, hist = None, {}, pd.DataFrame()
+
+        result = (ticker, info, hist)
+        with _ticker_data_lock:
+            _ticker_data_cache[symbol] = result
+        return result
+
+
 
 # ==============================================================
 # 🧠 PROCESAMIENTO DE UN TICKER (FUNCIÓN ATÓMICA)
@@ -2688,14 +3230,56 @@ def process_ticker(symbol: str) -> Tuple[str, Dict[str, Any], List[str]]:
     beta_val = get_beta(info, symbol)
     results['Beta'] = beta_val if beta_val is not None else defaults['Beta']
     results['Official URL'] = get_website(info, symbol)
+        # ── Guardar equity para el veto de riesgo (no se escribe a Sheets) ──
+    try:
+        _eq = (
+            info.get("totalStockholderEquity")
+            or info.get("totalEquity")
+            or 0
+        )
+        if not _eq and ticker:
+            try:
+                bs = ticker.quarterly_balance_sheet
+                for k in ['Stockholders Equity', 'Total Equity Gross Minority Interest', 'Common Stock Equity']:
+                    if k in bs.index:
+                        _eq = bs.loc[k].iloc[0]; break
+            except Exception:
+                pass
+        results['_total_equity'] = float(_eq) if _eq else 0.0
+    except Exception:
+        results['_total_equity'] = 0.0
+
+    # ── Piotroski F-Score ──
+    try:
+        f_score = get_piotroski_f_score(info, ticker, symbol)
+        results['Piotroski F-Score'] = f_score if f_score is not None else defaults['Piotroski F-Score']
+    except Exception as e:
+        logger.debug(f"{symbol}: Piotroski error: {e}")
+        results['Piotroski F-Score'] = defaults['Piotroski F-Score']
+
+    # ── Altman Z-Score ──
+    try:
+        z, zone = get_altman_z_score(info, ticker, symbol,
+                                      market_cap=market_cap_yf,
+                                      sector=sector)
+        results['Altman Z-Score'] = z if z is not None else defaults['Altman Z-Score']
+        results['Altman Zone'] = zone
+    except Exception as e:
+        logger.debug(f"{symbol}: Altman error: {e}")
+        results['Altman Z-Score'] = defaults['Altman Z-Score']
+        results['Altman Zone'] = defaults['Altman Zone']
 
     # ═══════════════════════════════════════════════════════
     # SCORING AUTOMÁTICO - ROBUSTO A STRINGS
     # ═══════════════════════════════════════════════════════
+        # ═══════════════════════════════════════════════════════
+    # SCORING (raw — la normalización por sector se hace en main)
+    # ═══════════════════════════════════════════════════════
     try:
         scores = {}
         scores['precio_objetivo'] = score_precio_objetivo(
-            safe_float(current_price), safe_float(results['Target Mean Price']), safe_float(results['Analyst Count'])
+            safe_float(current_price), safe_float(results['Target Mean Price']),
+            safe_float(results['Analyst Count'])
         )
         scores['crecimiento'] = score_crecimiento(
             results['Rev_Growth_YoY'], results['Gross_Margin'],
@@ -2716,13 +3300,12 @@ def process_ticker(symbol: str) -> Tuple[str, Dict[str, Any], List[str]]:
             de_num, results['FCF Growth YoY'], sector_cfg
         )
         scores['soportes'] = score_soportes_pro(
-            results['Dist a Soporte %'], 
+            results['Dist a Soporte %'],
             results['Dist a Resistencia %'],
-            results['Posición S/R'], 
+            results['Posición S/R'],
             results.get('Fuerza Soporte', 0),
-            results.get('Fuerza Resistencia', 0), 
+            results.get('Fuerza Resistencia', 0),
             results.get('ATR Threshold %', 0.02),
-            # Métricas avanzadas del análisis pro:
             pivot_strength_support=results.get('PivotStrengthSupport', 0),
             pivot_strength_resist=results.get('PivotStrengthResist', 0),
             volume_at_support=results.get('VolumeAtSupport', 0),
@@ -2734,8 +3317,6 @@ def process_ticker(symbol: str) -> Tuple[str, Dict[str, Any], List[str]]:
             fib_proximity=results.get('FibProximity', 1.0),
             trend_alignment=results.get('TrendAlignment', 0)
         )
-
-        # Scoring P7 — usar valores ya calculados
         scores['williams'] = score_williams_pro(
             results.get('Williams %R (Current)', 0),
             results.get('Williams %R (Daily)', 0),
@@ -2750,24 +3331,36 @@ def process_ticker(symbol: str) -> Tuple[str, Dict[str, Any], List[str]]:
             results.get('OBV Trend', 'NEUTRAL'),
             results.get('TrendAlignment', 0)
         )
-        
         scores['volumen'] = score_volumen(
             results['Volume Ratio'], results['OBV Trend'],
             results['Price-Volume Div'], results['MFI Level']
         )
 
-        final_score, grade = compute_final_score(scores, sector_cfg['weights'])
+        # Cap de riesgo (calculado aquí porque depende de datos del ticker)
+        risk_cap, cap_reasons = apply_risk_caps(results, sector_cfg)
+        results['Risk Cap'] = risk_cap
+        results['Cap Reasons'] = " | ".join(cap_reasons) if cap_reasons else ""
 
-        results['Score_Precio'] = scores['precio_objetivo']
-        results['Score_Crecimiento'] = scores['crecimiento']
-        results['Score_Tendencia'] = scores['tendencia']
+        # Score final RAW (pre-normalización) — Pass 2 lo reemplaza
+        final_score, grade, disp = compute_final_score(
+            scores, sector_cfg['weights'], risk_cap=risk_cap
+        )
+
+        results['Score_Precio']       = scores['precio_objetivo']
+        results['Score_Crecimiento']  = scores['crecimiento']
+        results['Score_Tendencia']    = scores['tendencia']
         results['Score_Consistencia'] = scores['consistencia']
-        results['Score_Valoracion'] = scores['valoracion']
-        results['Score_Soportes'] = scores['soportes']
-        results['Score_Williams'] = scores['williams']
-        results['Score_Volumen'] = scores['volumen']
-        results['Score_Final'] = final_score
-        results['Grade'] = grade
+        results['Score_Valoracion']   = scores['valoracion']
+        results['Score_Soportes']     = scores['soportes']
+        results['Score_Williams']     = scores['williams']
+        results['Score_Volumen']      = scores['volumen']
+        results['Score_Final']        = final_score
+        results['Grade']              = grade
+        results['Score_Dispersion']   = disp
+
+        # Guardar scores crudos para la normalización (no se escriben a Sheets)
+        results['_raw_scores'] = dict(scores)
+        results['_sector_weights'] = sector_cfg['weights']
 
         if scores['tendencia'] < 30 and scores['soportes'] < 30:
             alerts.append("SEÑAL BAJISTA FUERTE")
@@ -2777,15 +3370,16 @@ def process_ticker(symbol: str) -> Tuple[str, Dict[str, Any], List[str]]:
             alerts.append("CONSISTENCIA DÉBIL")
         if grade in ("A+", "A") and scores['volumen'] < 40:
             alerts.append("ALTO POTENCIAL, VOLUMEN BAJO")
+        if cap_reasons:
+            alerts.append(f"RIESGO: {' | '.join(cap_reasons)}")
     except Exception as e:
         logger.error(f"{symbol} error en Scoring: {e}")
-
     if fmp_cb.is_permanent():
         alerts.append("FMP INACTIVO: datos de perfil/ratios incompletos")
+
     results['Alertas'] = " | ".join(alerts) if alerts else "OK"
     logger.info(f"✅ {symbol} procesado. Score: {results.get('Score_Final', 'N/A')} | Grade: {results.get('Grade', 'N/A')}")
     return symbol, results, alerts
-
 
 # ==============================================================
 # 🚀 ORQUESTACIÓN PRINCIPAL (PARALELO CON 8 WORKERS)
@@ -2856,8 +3450,6 @@ def write_to_sheets(worksheet, all_results: Dict[str, List], symbols: List[str])
     batch_updates = []
     
     for metric, range_str in ranges.items():
-        if metric == 'Last Update' and 'Last Update' not in ranges:
-            continue  # se maneja abajo si no está en ranges
             
         values_to_update = []
         rows_to_update = []
@@ -2900,16 +3492,7 @@ def write_to_sheets(worksheet, all_results: Dict[str, List], symbols: List[str])
                 batch_updates.append({
                     'range': cell,
                     'values': [[val]]
-                })
-    
-    # Añadir Last Update (columna EH o la que elijas)
-    last_update_col = 'FU'  # ← AJUSTA ESTA LETRA A TU COLUMNA DISPONIBLE
-    for row_num, row_data in updates_by_row.items():
-        batch_updates.append({
-            'range': f"{last_update_col}{row_num}",
-            'values': [[row_data.get('Last Update', now_str)]]
-        })
-    
+                })  
     # 6. Ejecutar batch update
     if batch_updates:
         try:
@@ -2959,6 +3542,12 @@ def test_fmp_connectivity() -> bool:
         return False
 
 def main():
+    def main():
+    # ── Detectar modo de ejecución ──
+    run_mode = os.getenv("RUN_MODE", "deep").lower()
+    is_fast_mode = run_mode == "fast"
+    logger.info(f"▶ Modo de ejecución: {run_mode.upper()}")
+
     # Limpiar caches de sesión en cada ejecución
     with _av_cache_lock:
         _av_cache.clear()
@@ -2966,10 +3555,21 @@ def main():
         _ticker_data_cache.clear()
     with _fmp_profile_lock:
         _fmp_profile_cache.clear()
+    with _fmp_profile_locks_guard:
+        _fmp_profile_locks.clear()
+    with _ticker_locks_guard:
+        _ticker_data_locks.clear()
 
-    fmp_available = test_fmp_connectivity()
-    if not fmp_available:
-        logger.warning("⚠️ FMP no disponible. Modo DEGRADADO (yfinance + Finnhub only).")
+    # ── FAST: desactivar FMP y Alpha Vantage ──
+    if is_fast_mode:
+        logger.info("⚡ Modo FAST: FMP y Alpha Vantage desactivados (yfinance + Finnhub)")
+        fmp_cb._permanent = True
+        av_cb._permanent = True
+        fmp_available = False
+    else:
+        fmp_available = test_fmp_connectivity()
+        if not fmp_available:
+            logger.warning("⚠️ FMP no disponible. Modo DEGRADADO (yfinance + Finnhub only).")
 
     try:
         sh = gc.open(SPREADSHEET_NAME)
@@ -2986,7 +3586,33 @@ def main():
             logger.error("No se encontraron tickers válidos.")
             return
 
-        logger.info(f"🔍 Tickers válidos: {symbols}")
+        logger.info(f"🔍 Tickers válidos: {len(symbols)}")
+
+        # ── FAST: filtrar solo los que están en cartera (columna CT = "Sí") ──
+        if is_fast_mode:
+            try:
+                cartera_raw = worksheet.get('CT7:CT190')
+                tickers_raw = worksheet.get(ticker_range)
+                cartera_tickers = []
+                for i, item in enumerate(tickers_raw):
+                    if not item or not item[0]:
+                        continue
+                    sym = item[0].strip().upper()
+                    if sym not in symbols:
+                        continue
+                    if i < len(cartera_raw) and cartera_raw[i] and cartera_raw[i][0]:
+                        val = str(cartera_raw[i][0]).strip().lower()
+                        if val in ("sí", "si", "yes", "1", "true"):
+                            cartera_tickers.append(sym)
+
+                if cartera_tickers:
+                    logger.info(f"⚡ Modo FAST: {len(cartera_tickers)} tickers en cartera (de {len(symbols)} totales)")
+                    symbols = cartera_tickers
+                else:
+                    logger.warning("⚠️ No hay tickers marcados en cartera → procesando todos")
+            except Exception as e:
+                logger.error(f"Error filtrando cartera: {e}")
+                
         all_results = {key: [] for key in ranges.keys()}
 
         ticker_results = {}
@@ -3008,7 +3634,7 @@ def main():
             logger.warning(f"No se pudo leer columna Cartera: {e}")
 
 
-        with ThreadPoolExecutor(max_workers=4) as executor:
+        with ThreadPoolExecutor(max_workers=8) as executor:
             future_to_idx = {
                 executor.submit(process_ticker, sym): idx
                 for idx, sym in enumerate(symbols)
@@ -3025,22 +3651,59 @@ def main():
                     default_results['Alertas'] = f"ERROR: {str(e)[:50]}"
                     ticker_results[idx] = (symbols[idx], default_results, [])
 
+        # ══════════════════════════════════════════════════════
+        # PASS 2: NORMALIZACIÓN POR SECTOR + RECOMPUTE
+        # ══════════════════════════════════════════════════════
+        logger.info("🔬 Normalizando scores intra-sector...")
+        
+        norm_stats = normalize_scores_by_sector(ticker_results, min_peers=3)
+        for sec, n in sorted(norm_stats.items()):
+            if n > 0:
+                logger.info(f"   • {sec}: {n} tickers normalizados")
+            elif n == 0:
+                logger.info(f"   • {sec}: sin peers suficientes (raw scores)")
+
+        # Recalcular Score_Final con scores normalizados + dispersión + cap
+        logger.info("🎯 Recalculando Score_Final post-normalización...")
+        for idx, (sym, res, _) in ticker_results.items():
+            try:
+                norm_scores = {
+                    'precio_objetivo': safe_float(res.get('Score_Precio', 50)),
+                    'crecimiento':     safe_float(res.get('Score_Crecimiento', 50)),
+                    'tendencia':       safe_float(res.get('Score_Tendencia', 50)),
+                    'consistencia':    safe_float(res.get('Score_Consistencia', 50)),
+                    'valoracion':      safe_float(res.get('Score_Valoracion', 50)),
+                    'soportes':        safe_float(res.get('Score_Soportes', 50)),
+                    'williams':        safe_float(res.get('Score_Williams', 50)),
+                    'volumen':         safe_float(res.get('Score_Volumen', 50)),
+                }
+                weights = res.get('_sector_weights') or get_sector_config(res.get('Sector', ''))['weights']
+                risk_cap = safe_float(res.get('Risk Cap', 100), 100)
+
+                final, grade, disp = compute_final_score(norm_scores, weights, risk_cap=risk_cap)
+                res['Score_Final']      = final
+                res['Grade']            = grade
+                res['Score_Dispersion'] = disp
+                res['Sector Normalized'] = "Sí" if norm_stats.get(res.get('Sector', 'N/A'), 0) > 0 else "No"
+            except Exception as e:
+                logger.warning(f"{sym}: recompute post-norm falló: {e}")
+
+        # ── Construir all_results en el orden original ──
         for idx in range(len(symbols)):
             if idx in ticker_results:
                 _, results, _ = ticker_results[idx]
             else:
                 results = {key: defaults[key] for key in ranges.keys()}
                 results['Alertas'] = "ERROR: Sin resultados"
-            
-            # ─── PRESERVAR Cartera por ticker (evita desfase por tickers inválidos) ───
+
             sym = symbols[idx]
             if sym in cartera_map:
                 results['Cartera'] = cartera_map[sym]
             else:
                 results['Cartera'] = 'No'
-            
+
             for key in ranges.keys():
-                all_results[key].append([sanitize_for_sheets(results[key])])
+                all_results[key].append([sanitize_for_sheets(results.get(key, defaults.get(key)))])
 
         write_to_sheets(worksheet, all_results, symbols)
 
@@ -3079,6 +3742,12 @@ def main():
             upload_to_firestore(all_results, symbols)
         except Exception as e:
             logger.error(f"❌ Error subiendo a Firestore: {e}")
+                # ── Snapshot logging (Sprint 3) ──
+        try:
+            from snapshot_logger import log_snapshot
+            log_snapshot(all_results, symbols)
+        except Exception as e:
+            logger.error(f"❌ Snapshot logging falló: {e}")
 
     except gspread.exceptions.SpreadsheetNotFound:
         logger.error(f'❌ Hoja "{SPREADSHEET_NAME}" no encontrada.')
@@ -3088,6 +3757,10 @@ def main():
         import traceback
         logger.error(f"❌ Error inesperado: {e}")
         traceback.print_exc()
+    
+    finally:
+        _YF_INFO_EXECUTOR.shutdown(wait=False)  
+        _session.close()
 
 if __name__ == "__main__":
     main()

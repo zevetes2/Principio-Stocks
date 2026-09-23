@@ -2,6 +2,9 @@
 principios.json
 firebase-service-key.json
 .env
+snapshots.csv
+*.csv
+!requirements.txt
 
 # Python
 __pycache__/
