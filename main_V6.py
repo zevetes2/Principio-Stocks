@@ -3542,7 +3542,6 @@ def test_fmp_connectivity() -> bool:
         return False
 
 def main():
-    def main():
     # ── Detectar modo de ejecución ──
     run_mode = os.getenv("RUN_MODE", "deep").lower()
     is_fast_mode = run_mode == "fast"
@@ -3612,7 +3611,7 @@ def main():
                     logger.warning("⚠️ No hay tickers marcados en cartera → procesando todos")
             except Exception as e:
                 logger.error(f"Error filtrando cartera: {e}")
-                
+
         all_results = {key: [] for key in ranges.keys()}
 
         ticker_results = {}
